@@ -130,7 +130,7 @@ def extract_ipo_date_from_text(html_text: str) -> str | None:
 def extract_principal_holders(html_text: str) -> list[dict[str, str]]:
     try:
         tables = pd.read_html(html_text)
-    except ValueError:
+    except (ValueError, ImportError):
         return []
 
     holder_tables: list[dict[str, str]] = []
