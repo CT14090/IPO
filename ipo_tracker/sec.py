@@ -23,15 +23,37 @@ IPO_FORMS = {"424B4", "424B1", "424B3", "S-1", "S-1/A", "F-1", "F-1/A"}
 LOCKUP_SECTION_HEADINGS = (
     "lock-up agreements",
     "lockup agreements",
+    "lock-up period",
+    "lockup period",
+    "lock-up restrictions",
     "shares eligible for future sale",
     "underwriting",
 )
 PRINCIPAL_TABLE_MATCHES = (
     "Principal and Selling Stockholders",
     "Principal Stockholders",
+    "Principal and Executive Stockholders",
     "Beneficial Owner",
+    "Beneficial Ownership",
     "Selling Stockholders",
 )
+HOLDER_PLACEHOLDERS = {
+    "beneficial owner",
+    "beneficial owners",
+    "holder",
+    "holders",
+    "name",
+    "name of beneficial owner",
+    "principal stockholder",
+    "principal stockholders",
+    "selling stockholder",
+    "selling stockholders",
+    "stockholder",
+    "stockholders",
+    "shareholder",
+    "shareholders",
+    "total",
+}
 
 
 @dataclass(slots=True)
@@ -97,6 +119,12 @@ def find_latest_ipo_filing(cik: int | str) -> FilingReference | None:
             filing_url=filing_url,
         )
     return None
+
+
+def _clean_cell_text(value: Any) -> str:
+    text = unescape(str(value)).replace("\xa0", " ")
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
 
 
 def _strip_html(html_text: str) -> str:
@@ -168,43 +196,93 @@ def extract_ipo_date_from_text(html_text: str) -> str | None:
 
 def _normalize_holder_key(column: str) -> str:
     lower = column.strip().lower()
-    if any(token in lower for token in ("beneficial owner", "holder", "owner", "name")):
+    if any(token in lower for token in ("beneficial owner", "holder", "owner", "name", "stockholder", "shareholder")):
         return "holder"
-    if any(token in lower for token in ("share", "shares", "units")):
+    if any(token in lower for token in ("beneficially owned", "amount owned", "share", "shares", "units", "owned")):
         return "shares"
-    if any(token in lower for token in ("percent", "%")):
+    if any(token in lower for token in ("percent", "%", "ownership", "pct")):
         return "percent"
     if "voting" in lower:
         return "voting_power"
+    if "class" in lower:
+        return "class"
     return re.sub(r"\s+", " ", column.strip())
 
 
-def _canonicalize_holder_row(row: pd.Series) -> dict[str, str]:
-    record: dict[str, str] = {}
+def _is_placeholder_holder(text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", text).strip().lower().strip(":")
+    return normalized in HOLDER_PLACEHOLDERS
+
+
+def _parse_holder_measure(key: str, text: str) -> int | float | str:
+    cleaned = _clean_cell_text(text)
+    if key == "shares":
+        match = re.search(r"\d[\d,]*", cleaned)
+        if match:
+            digits = match.group(0).replace(",", "")
+            try:
+                return int(digits)
+            except ValueError:
+                pass
+    if key in {"percent", "voting_power"}:
+        match = re.search(r"\d+(?:\.\d+)?", cleaned)
+        if match:
+            try:
+                return float(match.group(0))
+            except ValueError:
+                pass
+    return cleaned
+
+
+def _canonicalize_holder_row(row: pd.Series) -> dict[str, Any]:
+    record: dict[str, Any] = {}
     for column, value in row.items():
         if pd.isna(value):
             continue
-        text = str(value).strip()
+        text = _clean_cell_text(value)
         if not text or text.lower() == "nan":
             continue
         key = _normalize_holder_key(str(column))
-        if key in record and key != str(column).strip():
+        if key == "holder":
+            if _is_placeholder_holder(text):
+                return {}
+            record[key] = text
+            continue
+        if key in {"shares", "percent", "voting_power"}:
+            record[key] = _parse_holder_measure(key, text)
             continue
         record[key] = text
+    if "holder" not in record:
+        return {}
+    if len(record) == 1:
+        return {}
     return record
 
 
 def _table_score(table: pd.DataFrame) -> int:
     columns = " ".join(str(column).lower() for column in table.columns)
     score = 0
-    for keyword in ("principal", "beneficial", "stockholder", "shareholder", "selling", "holder", "owner"):
+    for keyword in (
+        "principal",
+        "beneficial",
+        "beneficially owned",
+        "stockholder",
+        "shareholder",
+        "selling",
+        "holder",
+        "owner",
+        "ownership",
+        "voting",
+    ):
         if keyword in columns:
             score += 2
-    for cell in table.head(5).astype(str).fillna("").to_numpy().flatten():
+    if table.shape[0] >= 2:
+        score += 1
+    for cell in table.head(5).fillna("").astype(str).to_numpy().flatten():
         cell_text = str(cell).lower()
         if "share" in cell_text or "%" in cell_text:
             score += 1
-        if any(token in cell_text for token in ("director", "officer", "fund", "capital")):
+        if any(token in cell_text for token in ("director", "officer", "fund", "capital", "beneficially owned")):
             score += 1
     return score
 
@@ -219,7 +297,7 @@ def _read_html_tables(html_text: str, match: str | None = None) -> list[pd.DataF
         return []
 
 
-def extract_principal_holders(html_text: str) -> list[dict[str, str]]:
+def extract_principal_holders(html_text: str) -> list[dict[str, Any]]:
     tables: list[pd.DataFrame] = []
     for match in PRINCIPAL_TABLE_MATCHES:
         tables.extend(_read_html_tables(html_text, match=match))
@@ -229,18 +307,21 @@ def extract_principal_holders(html_text: str) -> list[dict[str, str]]:
     if not tables:
         return []
 
-    scored_tables = sorted(tables, key=_table_score, reverse=True)
-    holder_tables: list[dict[str, str]] = []
-    for table in scored_tables:
-        if _table_score(table) <= 0:
-            continue
-        for _, row in table.head(10).iterrows():
+    best_records: list[dict[str, Any]] = []
+    best_score = -1
+    for table in tables:
+        extracted_rows: list[dict[str, Any]] = []
+        for _, row in table.head(12).iterrows():
             record = _canonicalize_holder_row(row)
             if record:
-                holder_tables.append(record)
-        if holder_tables:
-            break
-    return holder_tables
+                extracted_rows.append(record)
+        if not extracted_rows:
+            continue
+        score = _table_score(table) + len(extracted_rows) * 5
+        if score > best_score:
+            best_records = extracted_rows
+            best_score = score
+    return best_records[:10]
 
 
 def enrich_company(company: dict[str, Any]) -> dict[str, Any]:
