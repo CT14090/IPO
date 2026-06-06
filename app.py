@@ -17,6 +17,7 @@ from ipo_tracker.db import (
     upsert_snapshot,
     webhook_event_exists,
 )
+from ipo_tracker.discovery import discover_recent_ipo_candidates
 from ipo_tracker.sec import enrich_company
 
 
@@ -199,6 +200,9 @@ def progress_badge(days_to_expiration: int) -> str:
 
 
 def render_company_card(row: dict) -> None:
+    confidence_score = row.get("confidence_score", 0)
+    confidence_label = row.get("confidence_label", "Seeded")
+    confidence_details = row.get("confidence_details", "Seeded watchlist entry ready for SEC enrichment.")
     with st.expander(f"{row['ticker']}  |  {row['company_name']}", expanded=row["days_to_expiration"] <= DEFAULT_ALERT_DAYS):
         left, right = st.columns([2, 1])
         with left:
@@ -214,18 +218,16 @@ def render_company_card(row: dict) -> None:
                 f"Theme: {row['theme']} | CIK: {row['cik']} | Filing form: {row['filing_form'] or 'not parsed yet'}"
             )
             st.caption(row["notes"])
-            st.caption(
-                f"Data confidence: {row['confidence_label']} ({row['confidence_score']}/100)"
-            )
-            if row.get("confidence_details"):
-                st.caption(row["confidence_details"])
+            st.caption(f"Data confidence: {confidence_label} ({confidence_score}/100)")
+            if confidence_details:
+                st.caption(confidence_details)
         with right:
             if row["source_url"]:
                 st.link_button("Open SEC filing", row["source_url"])
             else:
                 st.caption("SEC filing link will appear after a successful live refresh.")
             st.metric("Days to Expiration", row["days_to_expiration"])
-            st.metric("Confidence", f"{row['confidence_score']}/100")
+            st.metric("Confidence", f"{confidence_score}/100")
         if row["principal_holders"]:
             st.subheader("Principal holders parsed from filing")
             st.json(row["principal_holders"])
@@ -320,7 +322,7 @@ upcoming = sum(1 for row in rows if row["days_to_expiration"] > 0)
 due_soon = sum(1 for row in rows if 0 <= row["days_to_expiration"] <= 7)
 expired = sum(1 for row in rows if row["days_to_expiration"] < 0)
 watchlist_sources = len({row["source_url"] for row in rows if row["source_url"]})
-avg_confidence = round(sum(row["confidence_score"] for row in rows) / max(1, total))
+avg_confidence = round(sum(row.get("confidence_score", 0) for row in rows) / max(1, total))
 
 alert_rows = [row for row in rows if row["days_to_expiration"] == DEFAULT_ALERT_DAYS]
 if alert_rows:
@@ -331,7 +333,7 @@ if alert_rows:
 else:
     st.info("No watchlist company is exactly three days from unlock on the selected reference date.")
 
-overview_tab, companies_tab, deployment_tab = st.tabs(["Overview", "Companies", "Deployment"])
+overview_tab, companies_tab, discovery_tab, deployment_tab = st.tabs(["Overview", "Companies", "Discovery", "Deployment"])
 
 with overview_tab:
     metric_cols = st.columns(5)
@@ -362,7 +364,7 @@ with overview_tab:
             "IPO Date": row["ipo_date"],
             "Unlock Date": row["unlock_date"],
             "Days to Expiration": row["days_to_expiration"],
-            "Confidence": f"{row['confidence_label']} ({row['confidence_score']}/100)",
+            "Confidence": f"{row.get('confidence_label', 'Seeded')} ({row.get('confidence_score', 0)}/100)",
             "Status": row["status"],
             "Lock-up Days": row["lockup_days"],
             "Source": row["lockup_source"],
@@ -376,6 +378,28 @@ with companies_tab:
     st.caption("Each company expands into a compact card so the layout stays readable on smaller screens.")
     for row in rows:
         render_company_card(row)
+
+with discovery_tab:
+    st.subheader("Recent IPO candidates from SEC")
+    st.caption("This feed surfaces recent 424B4 and F-1 filings that are not already on the watchlist. It is a discovery queue, not a fully validated IPO list.")
+    candidates = discover_recent_ipo_candidates(limit=10)
+    if not candidates:
+        st.info("No new candidates found right now.")
+    else:
+        discovery_rows = [
+            {
+                "Company": candidate["company_name"],
+                "Ticker": candidate["ticker"] or "—",
+                "CIK": candidate["cik"],
+                "Form": candidate["form"],
+                "Filed": candidate["filing_date"],
+                "Confidence": candidate["confidence"],
+                "Why": candidate["reason"],
+            }
+            for candidate in candidates
+        ]
+        st.dataframe(pd.DataFrame(discovery_rows), use_container_width=True, hide_index=True)
+        st.caption("Use this tab to spot newly filed IPO candidates before they appear in the lock-up watchlist.")
 
 with deployment_tab:
     st.subheader("How to deploy this app")
