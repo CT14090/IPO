@@ -10,7 +10,7 @@ This demo tracks a small watchlist of US IPOs, calculates when early investors a
 - Attempts to enrich each company from SEC EDGAR filings when network access is available
 - Includes a lightweight Discord webhook helper for alerting
 
-## Run it
+## Run it locally
 
 ```bash
 python -m venv .venv
@@ -19,16 +19,28 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
+## Deploy on Streamlit Community Cloud
+
+- Connect the GitHub repo `CT14090/IPO`
+- Deploy from the `main` branch
+- Set the entrypoint file to `app.py`
+- Add secrets for the Discord webhook and optional SEC user agent
+
+Streamlit Community Cloud is free for personal, non-commercial, and educational apps. It connects directly to GitHub and updates your app when you push to the repository.
+
+## Secrets
+
+Use Streamlit secrets or the Cloud Secrets UI with these keys:
+
+```toml
+discord_webhook_url = "https://discord.com/api/webhooks/..."
+sec_user_agent = "IPO Lockup Tracker demo you@example.com"
+```
+
 ## SEC configuration
 
-The SEC asks for a descriptive user agent that includes contact information. Set it before running live refreshes:
-
-```bash
-export SEC_USER_AGENT="IPO Lockup Tracker demo you@example.com"
-```
+The SEC asks for a descriptive user agent that includes contact information. Set it before running live refreshes.
 
 ## Discord alerts
 
-Set `DISCORD_WEBHOOK_URL` if you want the helper to send a message when a company reaches `days_to_expiration == 3`.
-
-Direct GitHub publishing verified from the Codex workspace.
+Set `DISCORD_WEBHOOK_URL` or add `discord_webhook_url` to Streamlit secrets if you want the helper to send a message when a company reaches `days_to_expiration == 3`.
