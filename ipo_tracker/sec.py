@@ -5,6 +5,7 @@ import re
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from html import unescape
+from io import StringIO
 from typing import Any
 
 import pandas as pd
@@ -128,8 +129,9 @@ def extract_ipo_date_from_text(html_text: str) -> str | None:
 
 
 def extract_principal_holders(html_text: str) -> list[dict[str, str]]:
+    html_io = StringIO(html_text)
     try:
-        tables = pd.read_html(html_text)
+        tables = pd.read_html(html_io)
     except (ValueError, ImportError):
         return []
 
