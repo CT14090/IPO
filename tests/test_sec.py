@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from ipo_tracker.config import DEFAULT_LOCKUP_DAYS
-from ipo_tracker.sec import extract_lockup_days, extract_principal_holders
+from ipo_tracker.sec import assess_data_confidence, extract_lockup_days, extract_principal_holders
 
 
 class SecParserTests(unittest.TestCase):
@@ -68,6 +68,34 @@ class SecParserTests(unittest.TestCase):
         self.assertEqual(holders[1]["holder"], "Founder Holdings LLC")
         self.assertEqual(holders[1]["shares"], 8_765_432)
         self.assertAlmostEqual(holders[1]["percent"], 10.1)
+
+    def test_assess_data_confidence_rewards_live_parsing(self) -> None:
+        score, label, details = assess_data_confidence(
+            filing_form="424B4",
+            lockup_source="Lock-Up Agreements section: Regex match: 180 days",
+            principal_holders=[{"holder": "Sequoia Capital", "shares": 123}],
+            parsed_ipo_date="2024-03-21",
+            source_url="https://www.sec.gov/example",
+        )
+
+        self.assertGreaterEqual(score, 80)
+        self.assertEqual(label, "High")
+        self.assertIn("Matched filing form 424B4", details)
+        self.assertIn("Parsed 1 principal holder rows", details)
+
+    def test_assess_data_confidence_penalizes_seeded_fallbacks(self) -> None:
+        score, label, details = assess_data_confidence(
+            filing_form=None,
+            lockup_source="Seeded watchlist only",
+            principal_holders=[],
+            parsed_ipo_date=None,
+            source_url=None,
+        )
+
+        self.assertLess(score, 50)
+        self.assertEqual(label, "Low")
+        self.assertIn("No filing URL found", details)
+        self.assertIn("Principal holder table not cleanly parsed", details)
 
 
 if __name__ == "__main__":
