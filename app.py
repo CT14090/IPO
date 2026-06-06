@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import date, timedelta
 
 import altair as alt
@@ -27,7 +28,24 @@ st.set_page_config(
 )
 
 
+def read_secret(name: str, default: str = "") -> str:
+    try:
+        value = st.secrets.get(name, default)
+    except Exception:
+        return default
+    if value is None:
+        return default
+    return str(value).strip()
+
+
+def ensure_sec_user_agent() -> str:
+    user_agent = read_secret("sec_user_agent", "IPO Lockup Tracker demo you@example.com")
+    os.environ["SEC_USER_AGENT"] = user_agent
+    return user_agent
+
+
 def refresh_live_data() -> list[dict]:
+    ensure_sec_user_agent()
     rows = []
     for company in load_dashboard_rows():
         enriched = enrich_company(company)
@@ -51,7 +69,11 @@ def compute_dashboard_rows(reference_date: date) -> list[dict]:
     computed: list[dict] = []
     for row in rows:
         ipo_date = date.fromisoformat(row["ipo_date"])
-        unlock_date = date.fromisoformat(row["unlock_date"]) if row["unlock_date"] else ipo_date + timedelta(days=row["lockup_days"])
+        unlock_date = (
+            date.fromisoformat(row["unlock_date"])
+            if row["unlock_date"]
+            else ipo_date + timedelta(days=row["lockup_days"])
+        )
         days_to_expiration = (unlock_date - reference_date).days
         days_since_ipo = (reference_date - ipo_date).days
         unlock_progress = max(0.0, min(1.0, days_since_ipo / max(1, row["lockup_days"])))
@@ -62,9 +84,11 @@ def compute_dashboard_rows(reference_date: date) -> list[dict]:
                 "days_to_expiration": days_to_expiration,
                 "days_since_ipo": days_since_ipo,
                 "unlock_progress": unlock_progress,
-                "status": "Due soon"
-                if days_to_expiration == DEFAULT_ALERT_DAYS
-                else ("Upcoming" if days_to_expiration > 0 else "Expired"),
+                "status": (
+                    "Due soon"
+                    if days_to_expiration == DEFAULT_ALERT_DAYS
+                    else ("Upcoming" if days_to_expiration > 0 else "Expired")
+                ),
             }
         )
     return sorted(computed, key=lambda item: (item["days_to_expiration"], item["ticker"]))
@@ -142,12 +166,15 @@ def timeline_chart(rows: list[dict]) -> alt.Chart:
             alt.Tooltip("status:N", title="Status"),
         ],
     )
-    bar = base.mark_bar(height=18).encode(
+    bar = base.mark_bar(height=18, cornerRadiusEnd=4).encode(
         x=alt.X("ipo_date:T", title="Timeline"),
         x2="unlock_date:T",
         color=alt.Color(
             "status:N",
-            scale=alt.Scale(domain=["Upcoming", "Due soon", "Expired"], range=["#4f46e5", "#f59e0b", "#64748b"]),
+            scale=alt.Scale(
+                domain=["Upcoming", "Due soon", "Expired"],
+                range=["#4f46e5", "#f59e0b", "#64748b"],
+            ),
             legend=None,
         ),
     )
@@ -168,8 +195,36 @@ def progress_badge(days_to_expiration: int) -> str:
     return f"{days_to_expiration} days"
 
 
+def render_company_card(row: dict) -> None:
+    with st.expander(f"{row['ticker']}  |  {row['company_name']}", expanded=row["days_to_expiration"] <= DEFAULT_ALERT_DAYS):
+        left, right = st.columns([2, 1])
+        with left:
+            st.write(
+                f"IPO date: **{row['ipo_date']}** | Unlock date: **{row['unlock_date']}** | "
+                f"Days to expiration: **{row['days_to_expiration']}**"
+            )
+            st.progress(
+                min(1.0, max(0.0, row["unlock_progress"])),
+                text=f"{progress_badge(row['days_to_expiration'])} from IPO to unlock",
+            )
+            st.caption(
+                f"Theme: {row['theme']} | CIK: {row['cik']} | Filing form: {row['filing_form'] or 'not parsed yet'}"
+            )
+            st.caption(row["notes"])
+        with right:
+            if row["source_url"]:
+                st.link_button("Open SEC filing", row["source_url"])
+            else:
+                st.caption("SEC filing link will appear after a successful live refresh.")
+            st.metric("Days to Expiration", row["days_to_expiration"])
+        if row["principal_holders"]:
+            st.subheader("Principal holders parsed from filing")
+            st.json(row["principal_holders"])
+
+
 initialize_database()
 seed_companies()
+ensure_sec_user_agent()
 
 st.markdown(
     """
@@ -207,7 +262,7 @@ st.markdown(
     """
     <div class="hero">
         <h1>IPO Lockup Tracker</h1>
-        <p>Demo dashboard for US IPOs that estimates when early holders become eligible to sell after the lock-up period. It is seeded with a compact watchlist so the layout shows multiple overlapping timelines right away.</p>
+        <p>Demo dashboard for US IPOs that estimates when early holders become eligible to sell after the lock-up period. The app is designed for Streamlit Community Cloud and updates automatically from the `main` branch.</p>
     </div>
     """,
     unsafe_allow_html=True,
@@ -224,9 +279,18 @@ with st.sidebar:
     )
     reference_date = DEMO_REFERENCE_DATE if reference_mode == "Demo snapshot" else date.today()
     st.caption(f"Using reference date: {reference_date.isoformat()}")
-    webhook_url = st.text_input("Discord webhook URL", value="", type="password", help="Optional. Sends a payload when days_to_expiration == 3.")
+    secret_webhook = read_secret("discord_webhook_url", "")
+    webhook_url = st.text_input(
+        "Discord webhook URL",
+        value=secret_webhook,
+        type="password",
+        help="Optional. Sends a payload when days_to_expiration == 3. You can also store this in Streamlit secrets.",
+    ).strip()
     run_alerts = st.toggle("Send Discord alerts during refresh", value=False)
     refresh_clicked = st.button("Refresh from SEC now", type="primary")
+    if secret_webhook:
+        st.caption("Discord webhook loaded from Streamlit secrets.")
+    st.caption("For Streamlit Cloud: repo `CT14090/IPO`, branch `main`, entrypoint `app.py`.")
 
 if refresh_clicked and use_live_sec:
     with st.spinner("Refreshing SEC data..."):
@@ -248,58 +312,76 @@ due_soon = sum(1 for row in rows if 0 <= row["days_to_expiration"] <= 7)
 expired = sum(1 for row in rows if row["days_to_expiration"] < 0)
 watchlist_sources = len({row["source_url"] for row in rows if row["source_url"]})
 
-metric_cols = st.columns(4)
-metric_cols[0].metric("Watchlist IPOs", total)
-metric_cols[1].metric("Upcoming", upcoming)
-metric_cols[2].metric("Due in 7 days", due_soon)
-metric_cols[3].metric("Expired", expired)
-st.caption(f"{watchlist_sources} company records currently have SEC filing links.")
+alert_rows = [row for row in rows if row["days_to_expiration"] == DEFAULT_ALERT_DAYS]
+if alert_rows:
+    st.warning(
+        "3-day alert window: "
+        + ", ".join(f"{row['ticker']} ({row['days_to_expiration']} days)" for row in alert_rows)
+    )
+else:
+    st.info("No watchlist company is exactly three days from unlock on the selected reference date.")
 
-st.subheader("Unlock timeline")
-st.caption("Each bar starts at the IPO date and ends at the estimated unlock date. The demo snapshot intentionally surfaces multiple overlapping unlock windows.")
-st.altair_chart(timeline_chart(rows), use_container_width=True)
+overview_tab, companies_tab, deployment_tab = st.tabs(["Overview", "Companies", "Deployment"])
 
-st.subheader("Upcoming and recent unlocks")
-table_rows = [
-    {
-        "Company": row["company_name"],
-        "Ticker": row["ticker"],
-        "IPO Date": row["ipo_date"],
-        "Unlock Date": row["unlock_date"],
-        "Days to Expiration": row["days_to_expiration"],
-        "Status": row["status"],
-        "Lock-up Days": row["lockup_days"],
-        "Source": row["lockup_source"],
-    }
-    for row in rows
-]
-st.dataframe(
-    pd.DataFrame(table_rows),
-    use_container_width=True,
-    hide_index=True,
-)
+with overview_tab:
+    metric_cols = st.columns(4)
+    metric_cols[0].metric("Watchlist IPOs", total)
+    metric_cols[1].metric("Upcoming", upcoming)
+    metric_cols[2].metric("Due in 7 days", due_soon)
+    metric_cols[3].metric("Expired", expired)
+    st.caption(f"{watchlist_sources} company records currently have SEC filing links.")
 
-st.subheader("Company detail")
-detail_cols = st.columns(2)
-for index, row in enumerate(rows):
-    with detail_cols[index % 2]:
-        with st.container(border=True):
-            st.markdown(f"### {row['company_name']} (`{row['ticker']}`)")
-            st.write(
-                f"IPO date: **{row['ipo_date']}** | Unlock date: **{row['unlock_date']}** | "
-                f"Days to expiration: **{row['days_to_expiration']}**"
-            )
-            st.progress(min(1.0, max(0.0, row["unlock_progress"])), text=f"{progress_badge(row['days_to_expiration'])} from IPO to unlock")
-            st.caption(f"Theme: {row['theme']} | CIK: {row['cik']} | Filing form: {row['filing_form'] or 'not parsed yet'}")
-            st.caption(row["notes"])
-            if row["source_url"]:
-                st.link_button("Open SEC filing", row["source_url"])
-            if row["principal_holders"]:
-                with st.expander("Principal holders parsed from filing"):
-                    st.json(row["principal_holders"])
-            else:
-                with st.expander("Principal holders parsed from filing"):
-                    st.write("No table was extracted yet for this company.")
+    st.subheader("Unlock timeline")
+    st.caption(
+        "Each bar starts at the IPO date and ends at the estimated unlock date. The demo snapshot intentionally surfaces multiple overlapping unlock windows."
+    )
+    st.altair_chart(timeline_chart(rows), use_container_width=True)
+
+    if due_soon:
+        due_tickers = ", ".join(f"{row['ticker']} ({row['days_to_expiration']}d)" for row in rows if 0 <= row["days_to_expiration"] <= 7)
+        st.success(f"Due soon: {due_tickers}")
+    else:
+        st.success("No lockups are due within the next 7 days for the chosen reference date.")
+
+    st.subheader("Upcoming and recent unlocks")
+    table_rows = [
+        {
+            "Company": row["company_name"],
+            "Ticker": row["ticker"],
+            "IPO Date": row["ipo_date"],
+            "Unlock Date": row["unlock_date"],
+            "Days to Expiration": row["days_to_expiration"],
+            "Status": row["status"],
+            "Lock-up Days": row["lockup_days"],
+            "Source": row["lockup_source"],
+        }
+        for row in rows
+    ]
+    st.dataframe(pd.DataFrame(table_rows), use_container_width=True, hide_index=True)
+
+with companies_tab:
+    st.subheader("Company detail")
+    st.caption("Each company expands into a compact card so the layout stays readable on smaller screens.")
+    for row in rows:
+        render_company_card(row)
+
+with deployment_tab:
+    st.subheader("How to deploy this app")
+    st.markdown(
+        """
+        1. Deploy from GitHub using `main` and `app.py` as the entrypoint.
+        2. Keep `requirements.txt` at the repo root so Streamlit installs dependencies automatically.
+        3. Add secrets in Streamlit Cloud for the Discord webhook and optional SEC user agent.
+        """
+    )
+    st.code(
+        'discord_webhook_url = "https://discord.com/api/webhooks/..."\nsec_user_agent = "IPO Lockup Tracker demo you@example.com"',
+        language="toml",
+    )
+    st.info(
+        "Streamlit Community Cloud is free for personal, non-commercial, and educational apps, and it syncs updates directly from GitHub."
+    )
+    st.caption("If you edit the repo on `main`, the Cloud app will pick up the changes automatically after the next refresh.")
 
 st.subheader("Demo notes")
 st.info(
