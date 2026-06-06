@@ -31,6 +31,18 @@ def _ensure_column(conn: sqlite3.Connection, table_name: str, column_name: str, 
     conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {ddl}")
 
 
+def _row_value(row: sqlite3.Row | None, key: str, default):
+    if row is None:
+        return default
+    keys = row.keys()
+    if key not in keys:
+        return default
+    value = row[key]
+    if value is None:
+        return default
+    return value
+
+
 def initialize_database() -> None:
     with get_connection() as conn:
         conn.execute(
@@ -202,16 +214,16 @@ def load_dashboard_rows() -> list[dict]:
                 "ipo_date": row["ipo_date"],
                 "lockup_days": row["lockup_days"],
                 "theme": row["theme"],
-                "filing_form": snapshot["filing_form"] if snapshot else None,
-                "filing_date": snapshot["filing_date"] if snapshot else None,
-                "source_url": snapshot["source_url"] if snapshot else None,
-                "unlock_date": snapshot["unlock_date"] if snapshot else None,
-                "principal_holders": json.loads(snapshot["principal_holders_json"]) if snapshot else [],
-                "lockup_source": snapshot["lockup_source"] if snapshot else "Seeded watchlist",
-                "confidence_score": snapshot["confidence_score"] if snapshot else 0,
-                "confidence_label": snapshot["confidence_label"] if snapshot else "Seeded",
-                "confidence_details": snapshot["confidence_details"] if snapshot else "Seeded watchlist entry ready for SEC enrichment.",
-                "notes": snapshot["notes"] if snapshot else "Seeded watchlist entry ready for SEC enrichment.",
+                "filing_form": _row_value(snapshot, "filing_form", None),
+                "filing_date": _row_value(snapshot, "filing_date", None),
+                "source_url": _row_value(snapshot, "source_url", None),
+                "unlock_date": _row_value(snapshot, "unlock_date", None),
+                "principal_holders": json.loads(_row_value(snapshot, "principal_holders_json", "[]")),
+                "lockup_source": _row_value(snapshot, "lockup_source", "Seeded watchlist"),
+                "confidence_score": int(_row_value(snapshot, "confidence_score", 0)),
+                "confidence_label": _row_value(snapshot, "confidence_label", "Seeded"),
+                "confidence_details": _row_value(snapshot, "confidence_details", "Seeded watchlist entry ready for SEC enrichment."),
+                "notes": _row_value(snapshot, "notes", "Seeded watchlist entry ready for SEC enrichment."),
             }
         )
     return rows
