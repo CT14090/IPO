@@ -324,6 +324,63 @@ def extract_principal_holders(html_text: str) -> list[dict[str, Any]]:
     return best_records[:10]
 
 
+def _confidence_label(score: int) -> str:
+    if score >= 80:
+        return "High"
+    if score >= 50:
+        return "Medium"
+    return "Low"
+
+
+def assess_data_confidence(
+    *,
+    filing_form: str | None,
+    lockup_source: str,
+    principal_holders: list[dict[str, Any]],
+    parsed_ipo_date: str | None,
+    source_url: str | None,
+) -> tuple[int, str, str]:
+    score = 0
+    details: list[str] = []
+
+    if source_url:
+        score += 20
+        details.append("SEC filing URL available")
+    else:
+        details.append("No filing URL found")
+
+    if filing_form in IPO_FORMS:
+        score += 20
+        details.append(f"Matched filing form {filing_form}")
+    elif filing_form:
+        score += 10
+        details.append(f"Found non-standard filing form {filing_form}")
+    else:
+        details.append("No filing form parsed")
+
+    if lockup_source.startswith("Defaulted"):
+        details.append("Lock-up term fell back to seeded default")
+    else:
+        score += 25
+        details.append("Lock-up term parsed from filing text")
+
+    if parsed_ipo_date:
+        score += 10
+        details.append("IPO date parsed from filing text")
+    else:
+        details.append("IPO date inherited from seeded watchlist")
+
+    holder_count = len(principal_holders)
+    if holder_count:
+        score += 25
+        details.append(f"Parsed {holder_count} principal holder rows")
+    else:
+        details.append("Principal holder table not cleanly parsed")
+
+    final_score = min(100, score)
+    return final_score, _confidence_label(final_score), "; ".join(details)
+
+
 def enrich_company(company: dict[str, Any]) -> dict[str, Any]:
     """
     Fetch the most relevant IPO filing for a company and derive an unlock estimate.
@@ -346,6 +403,9 @@ def enrich_company(company: dict[str, Any]) -> dict[str, Any]:
             "unlock_date": unlock_date.isoformat(),
             "principal_holders": [],
             "lockup_source": "Seeded watchlist only",
+            "confidence_score": 0,
+            "confidence_label": "Low",
+            "confidence_details": f"SEC enrichment failed: {exc}",
             "notes": f"SEC enrichment failed: {exc}",
         }
 
@@ -359,6 +419,9 @@ def enrich_company(company: dict[str, Any]) -> dict[str, Any]:
             "unlock_date": unlock_date.isoformat(),
             "principal_holders": [],
             "lockup_source": "Seeded watchlist only",
+            "confidence_score": 0,
+            "confidence_label": "Low",
+            "confidence_details": "No IPO-related filing found in recent SEC submissions.",
             "notes": "No IPO-related filing found in recent SEC submissions.",
         }
 
@@ -377,10 +440,20 @@ def enrich_company(company: dict[str, Any]) -> dict[str, Any]:
             "unlock_date": unlock_date.isoformat(),
             "principal_holders": [],
             "lockup_source": "Seeded watchlist only",
+            "confidence_score": 20,
+            "confidence_label": "Low",
+            "confidence_details": f"Matched filing metadata, but live filing parse failed: {exc}",
             "notes": f"SEC filing could not be parsed cleanly: {exc}",
         }
     ipo_date = date.fromisoformat(parsed_ipo_date) if parsed_ipo_date else base_ipo_date
     unlock_date = ipo_date + timedelta(days=parsed_lockup_days)
+    confidence_score, confidence_label, confidence_details = assess_data_confidence(
+        filing_form=filing_ref.form,
+        lockup_source=lockup_source,
+        principal_holders=principal_holders,
+        parsed_ipo_date=parsed_ipo_date,
+        source_url=filing_ref.filing_url,
+    )
 
     if principal_holders:
         notes = f"Live SEC filing parsed successfully. Extracted {len(principal_holders)} holder rows."
@@ -395,5 +468,8 @@ def enrich_company(company: dict[str, Any]) -> dict[str, Any]:
         "unlock_date": unlock_date.isoformat(),
         "principal_holders": principal_holders,
         "lockup_source": lockup_source,
+        "confidence_score": confidence_score,
+        "confidence_label": confidence_label,
+        "confidence_details": confidence_details,
         "notes": notes,
     }
