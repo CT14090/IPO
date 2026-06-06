@@ -31,3 +31,4 @@ export SEC_USER_AGENT="IPO Lockup Tracker demo you@example.com"
 
 Set `DISCORD_WEBHOOK_URL` if you want the helper to send a message when a company reaches `days_to_expiration == 3`.
 
+Direct GitHub publishing verified from the Codex workspace.
