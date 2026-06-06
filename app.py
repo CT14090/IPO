@@ -58,6 +58,9 @@ def refresh_live_data() -> list[dict]:
             unlock_date=enriched["unlock_date"],
             principal_holders=enriched["principal_holders"],
             lockup_source=enriched["lockup_source"],
+            confidence_score=enriched["confidence_score"],
+            confidence_label=enriched["confidence_label"],
+            confidence_details=enriched["confidence_details"],
             notes=enriched["notes"],
         )
         rows.append({**company, **enriched})
@@ -211,12 +214,18 @@ def render_company_card(row: dict) -> None:
                 f"Theme: {row['theme']} | CIK: {row['cik']} | Filing form: {row['filing_form'] or 'not parsed yet'}"
             )
             st.caption(row["notes"])
+            st.caption(
+                f"Data confidence: {row['confidence_label']} ({row['confidence_score']}/100)"
+            )
+            if row.get("confidence_details"):
+                st.caption(row["confidence_details"])
         with right:
             if row["source_url"]:
                 st.link_button("Open SEC filing", row["source_url"])
             else:
                 st.caption("SEC filing link will appear after a successful live refresh.")
             st.metric("Days to Expiration", row["days_to_expiration"])
+            st.metric("Confidence", f"{row['confidence_score']}/100")
         if row["principal_holders"]:
             st.subheader("Principal holders parsed from filing")
             st.json(row["principal_holders"])
@@ -311,6 +320,7 @@ upcoming = sum(1 for row in rows if row["days_to_expiration"] > 0)
 due_soon = sum(1 for row in rows if 0 <= row["days_to_expiration"] <= 7)
 expired = sum(1 for row in rows if row["days_to_expiration"] < 0)
 watchlist_sources = len({row["source_url"] for row in rows if row["source_url"]})
+avg_confidence = round(sum(row["confidence_score"] for row in rows) / max(1, total))
 
 alert_rows = [row for row in rows if row["days_to_expiration"] == DEFAULT_ALERT_DAYS]
 if alert_rows:
@@ -324,11 +334,12 @@ else:
 overview_tab, companies_tab, deployment_tab = st.tabs(["Overview", "Companies", "Deployment"])
 
 with overview_tab:
-    metric_cols = st.columns(4)
+    metric_cols = st.columns(5)
     metric_cols[0].metric("Watchlist IPOs", total)
     metric_cols[1].metric("Upcoming", upcoming)
     metric_cols[2].metric("Due in 7 days", due_soon)
     metric_cols[3].metric("Expired", expired)
+    metric_cols[4].metric("Avg confidence", f"{avg_confidence}/100")
     st.caption(f"{watchlist_sources} company records currently have SEC filing links.")
 
     st.subheader("Unlock timeline")
@@ -351,6 +362,7 @@ with overview_tab:
             "IPO Date": row["ipo_date"],
             "Unlock Date": row["unlock_date"],
             "Days to Expiration": row["days_to_expiration"],
+            "Confidence": f"{row['confidence_label']} ({row['confidence_score']}/100)",
             "Status": row["status"],
             "Lock-up Days": row["lockup_days"],
             "Source": row["lockup_source"],
