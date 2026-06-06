@@ -20,6 +20,17 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
+def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return {row[1] for row in rows}
+
+
+def _ensure_column(conn: sqlite3.Connection, table_name: str, column_name: str, ddl: str) -> None:
+    if column_name in _table_columns(conn, table_name):
+        return
+    conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {ddl}")
+
+
 def initialize_database() -> None:
     with get_connection() as conn:
         conn.execute(
@@ -49,6 +60,9 @@ def initialize_database() -> None:
                 unlock_date TEXT NOT NULL,
                 principal_holders_json TEXT NOT NULL,
                 lockup_source TEXT NOT NULL,
+                confidence_score INTEGER NOT NULL DEFAULT 0,
+                confidence_label TEXT NOT NULL DEFAULT 'Seeded',
+                confidence_details TEXT NOT NULL DEFAULT '',
                 notes TEXT NOT NULL,
                 fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY(company_id) REFERENCES companies(id)
@@ -69,6 +83,9 @@ def initialize_database() -> None:
             )
             """
         )
+        _ensure_column(conn, "company_snapshots", "confidence_score", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(conn, "company_snapshots", "confidence_label", "TEXT NOT NULL DEFAULT 'Seeded'")
+        _ensure_column(conn, "company_snapshots", "confidence_details", "TEXT NOT NULL DEFAULT ''")
         conn.commit()
 
 
@@ -121,6 +138,9 @@ def upsert_snapshot(
     unlock_date: str,
     principal_holders: Sequence[dict] | None,
     lockup_source: str,
+    confidence_score: int,
+    confidence_label: str,
+    confidence_details: str,
     notes: str,
 ) -> None:
     with get_connection() as conn:
@@ -128,9 +148,10 @@ def upsert_snapshot(
             """
             INSERT INTO company_snapshots (
                 company_id, filing_form, filing_date, source_url, lockup_days,
-                unlock_date, principal_holders_json, lockup_source, notes
+                unlock_date, principal_holders_json, lockup_source,
+                confidence_score, confidence_label, confidence_details, notes
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 company_id,
@@ -141,6 +162,9 @@ def upsert_snapshot(
                 unlock_date,
                 json.dumps(list(principal_holders or []), default=str),
                 lockup_source,
+                confidence_score,
+                confidence_label,
+                confidence_details,
                 notes,
             ),
         )
@@ -184,6 +208,9 @@ def load_dashboard_rows() -> list[dict]:
                 "unlock_date": snapshot["unlock_date"] if snapshot else None,
                 "principal_holders": json.loads(snapshot["principal_holders_json"]) if snapshot else [],
                 "lockup_source": snapshot["lockup_source"] if snapshot else "Seeded watchlist",
+                "confidence_score": snapshot["confidence_score"] if snapshot else 0,
+                "confidence_label": snapshot["confidence_label"] if snapshot else "Seeded",
+                "confidence_details": snapshot["confidence_details"] if snapshot else "Seeded watchlist entry ready for SEC enrichment.",
                 "notes": snapshot["notes"] if snapshot else "Seeded watchlist entry ready for SEC enrichment.",
             }
         )
