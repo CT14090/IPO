@@ -129,19 +129,20 @@ def parse_discovery_candidates(feed_xml: str, *, form: str, watched_ciks: set[in
 def discover_recent_ipo_candidates(limit: int = 10) -> list[dict[str, Any]]:
     watched_ciks = {company["cik"] for company in WATCHLIST}
     company_index = fetch_company_index()
-    candidates: list[DiscoveryCandidate] = []
+    candidates_by_cik: dict[int, DiscoveryCandidate] = {}
 
     for form, url in CURRENT_FILINGS_URLS.items():
         response = requests.get(url, headers=sec_headers(), timeout=30)
         response.raise_for_status()
-        candidates.extend(
-            parse_discovery_candidates(
-                response.text,
-                form=form,
-                watched_ciks=watched_ciks,
-                company_index=company_index,
-            )
-        )
+        for candidate in parse_discovery_candidates(
+            response.text,
+            form=form,
+            watched_ciks=watched_ciks,
+            company_index=company_index,
+        ):
+            existing = candidates_by_cik.get(candidate.cik)
+            if existing is None or candidate.filing_date >= existing.filing_date:
+                candidates_by_cik[candidate.cik] = candidate
 
-    candidates.sort(key=lambda item: item.filing_date, reverse=True)
+    candidates = sorted(candidates_by_cik.values(), key=lambda item: item.filing_date, reverse=True)
     return [candidate.as_dict() for candidate in candidates[:limit]]
