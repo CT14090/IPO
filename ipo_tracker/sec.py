@@ -20,6 +20,18 @@ SEC_BASE_HEADERS = {
 }
 
 IPO_FORMS = {"424B4", "424B1", "424B3", "S-1", "S-1/A", "F-1", "F-1/A"}
+LOCKUP_SECTION_HEADINGS = (
+    "lock-up agreements",
+    "lockup agreements",
+    "shares eligible for future sale",
+    "underwriting",
+)
+PRINCIPAL_TABLE_MATCHES = (
+    "Principal and Selling Stockholders",
+    "Principal Stockholders",
+    "Beneficial Owner",
+    "Selling Stockholders",
+)
 
 
 @dataclass(slots=True)
@@ -96,13 +108,24 @@ def _strip_html(html_text: str) -> str:
     return text.strip()
 
 
-def extract_lockup_days(html_text: str) -> tuple[int, str]:
-    text = _strip_html(html_text)
+def _find_section_window(text: str, heading: str, before: int = 200, after: int = 1600) -> str | None:
+    lowered = text.lower()
+    index = lowered.find(heading)
+    if index == -1:
+        return None
+    start = max(0, index - before)
+    end = min(len(text), index + after)
+    return text[start:end]
+
+
+def _extract_lockup_days_from_text(text: str) -> tuple[int | None, str | None]:
     patterns = [
-        r"lock[- ]up(?:[^.]{0,250})?(\d{2,3})\s+days",
-        r"period of\s+(\d{2,3})\s+days(?:[^.]{0,120})?lock[- ]up",
+        r"for a period of\s+(\d{2,3})\s+days",
+        r"period of\s+(\d{2,3})\s+days",
+        r"(\d{2,3})\s+days after the date of this prospectus",
+        r"(\d{2,3})\s+days from the date of this prospectus",
         r"(\d{2,3})\s+day lock[- ]up",
-        r"lock[- ]up period(?:[^.]{0,120})?(\d{2,3})\s+days",
+        r"lock[- ]up(?:[^.]{0,300})?(\d{2,3})\s+days",
     ]
     for pattern in patterns:
         match = re.search(pattern, text, flags=re.I)
@@ -110,6 +133,21 @@ def extract_lockup_days(html_text: str) -> tuple[int, str]:
             return int(match.group(1)), f"Regex match: {match.group(0)[:140]}"
     if re.search(r"one year", text, flags=re.I):
         return 365, "Detected one-year lock-up"
+    return None, None
+
+
+def extract_lockup_days(html_text: str) -> tuple[int, str]:
+    text = _strip_html(html_text)
+    for heading in LOCKUP_SECTION_HEADINGS:
+        section = _find_section_window(text, heading)
+        if not section:
+            continue
+        parsed_days, reason = _extract_lockup_days_from_text(section)
+        if parsed_days is not None:
+            return parsed_days, f"{heading.title()} section: {reason}"
+    parsed_days, reason = _extract_lockup_days_from_text(text)
+    if parsed_days is not None and reason:
+        return parsed_days, reason
     return DEFAULT_LOCKUP_DAYS, "Defaulted to 180 days after no confident lock-up match"
 
 
@@ -128,27 +166,76 @@ def extract_ipo_date_from_text(html_text: str) -> str | None:
     return None
 
 
-def extract_principal_holders(html_text: str) -> list[dict[str, str]]:
+def _normalize_holder_key(column: str) -> str:
+    lower = column.strip().lower()
+    if any(token in lower for token in ("beneficial owner", "holder", "owner", "name")):
+        return "holder"
+    if any(token in lower for token in ("share", "shares", "units")):
+        return "shares"
+    if any(token in lower for token in ("percent", "%")):
+        return "percent"
+    if "voting" in lower:
+        return "voting_power"
+    return re.sub(r"\s+", " ", column.strip())
+
+
+def _canonicalize_holder_row(row: pd.Series) -> dict[str, str]:
+    record: dict[str, str] = {}
+    for column, value in row.items():
+        if pd.isna(value):
+            continue
+        text = str(value).strip()
+        if not text or text.lower() == "nan":
+            continue
+        key = _normalize_holder_key(str(column))
+        if key in record and key != str(column).strip():
+            continue
+        record[key] = text
+    return record
+
+
+def _table_score(table: pd.DataFrame) -> int:
+    columns = " ".join(str(column).lower() for column in table.columns)
+    score = 0
+    for keyword in ("principal", "beneficial", "stockholder", "shareholder", "selling", "holder", "owner"):
+        if keyword in columns:
+            score += 2
+    for cell in table.head(5).astype(str).fillna("").to_numpy().flatten():
+        cell_text = str(cell).lower()
+        if "share" in cell_text or "%" in cell_text:
+            score += 1
+        if any(token in cell_text for token in ("director", "officer", "fund", "capital")):
+            score += 1
+    return score
+
+
+def _read_html_tables(html_text: str, match: str | None = None) -> list[pd.DataFrame]:
     html_io = StringIO(html_text)
     try:
-        tables = pd.read_html(html_io)
+        if match:
+            return pd.read_html(html_io, match=match)
+        return pd.read_html(html_io)
     except (ValueError, ImportError):
         return []
 
+
+def extract_principal_holders(html_text: str) -> list[dict[str, str]]:
+    tables: list[pd.DataFrame] = []
+    for match in PRINCIPAL_TABLE_MATCHES:
+        tables.extend(_read_html_tables(html_text, match=match))
+    if not tables:
+        tables = _read_html_tables(html_text)
+
+    if not tables:
+        return []
+
+    scored_tables = sorted(tables, key=_table_score, reverse=True)
     holder_tables: list[dict[str, str]] = []
-    for table in tables:
-        lowered_columns = [str(column).lower() for column in table.columns]
-        if not any(
-            keyword in " ".join(lowered_columns)
-            for keyword in ("principal", "beneficial", "stockholder", "shareholder", "selling")
-        ):
+    for table in scored_tables:
+        if _table_score(table) <= 0:
             continue
-        for _, row in table.head(8).iterrows():
-            record = {
-                str(column): str(value)
-                for column, value in row.items()
-                if str(value).strip() not in {"", "nan", "None"}
-            }
+        for _, row in table.head(10).iterrows():
+            record = _canonicalize_holder_row(row)
             if record:
                 holder_tables.append(record)
         if holder_tables:
@@ -214,8 +301,9 @@ def enrich_company(company: dict[str, Any]) -> dict[str, Any]:
     ipo_date = date.fromisoformat(parsed_ipo_date) if parsed_ipo_date else base_ipo_date
     unlock_date = ipo_date + timedelta(days=parsed_lockup_days)
 
-    notes = "Live SEC filing parsed successfully."
-    if not principal_holders:
+    if principal_holders:
+        notes = f"Live SEC filing parsed successfully. Extracted {len(principal_holders)} holder rows."
+    else:
         notes = "Live filing parsed, but the principal stockholder table was not extracted cleanly."
 
     return {
