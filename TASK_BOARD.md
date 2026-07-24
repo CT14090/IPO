@@ -13,6 +13,15 @@
 - Rowspan-flattened principal holder parsing is in `ipo_tracker/sec.py`.
 - Automated IPO discovery is in `ipo_tracker/discovery.py` and shown in the Streamlit `Discovery` tab.
 - Discovery now uses EFTS as the primary path with RSS fallback and IPO-vs-secondary filtering.
+- Structured `lockup_conditions` data now exists in `enrich_company()`, but the UI does not yet surface it directly.
+
+## Needs Regression Tests
+- Add parser tests for greenshoe disambiguation.
+- Add parser tests for early-release and earnings-trigger detection.
+- Add parser tests for 8-K amendment detection.
+- Add parser tests for cover-page IPO date extraction.
+- Add parser tests for rowspan-flattened holder extraction.
+- Add discovery tests that cover the EFTS primary path and the RSS fallback path.
 
 ## Next Up
 - Add yfinance price and volume enrichment.
