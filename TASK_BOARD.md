@@ -4,16 +4,20 @@
 - Confidence score / parse quality is implemented in `ipo_tracker/sec.py`, stored in `ipo_tracker/db.py`, and displayed in `app.py`.
 - Crash fix / schema resilience is implemented; older snapshot rows load safely and missing confidence fields no longer break the app.
 - Streamlit dashboard, deployment docs, and Discord webhook helper are already in place.
+- Greenshoe disambiguation is implemented in `ipo_tracker/sec.py` and is visible in live ALAB validation.
+- Dual-trigger / early release detection is implemented in `ipo_tracker/sec.py` and is visible in live ALAB validation.
+- Post-IPO 8-K monitoring is implemented in `ipo_tracker/sec.py` and is visible in live ALAB validation.
+- IPO date from cover-page parsing is implemented in `ipo_tracker/sec.py` and is visible in live ALAB validation.
 
 ## Implemented in `main`, Pending Live Validation
-- Greenshoe disambiguation fix is in `ipo_tracker/sec.py`.
-- Dual-trigger / early release detection is in `ipo_tracker/sec.py`.
-- Post-IPO 8-K monitoring is in `ipo_tracker/sec.py`.
-- IPO date from cover-page parsing is in `ipo_tracker/sec.py`.
 - Rowspan-flattened principal holder parsing is in `ipo_tracker/sec.py`.
 - Automated IPO discovery is in `ipo_tracker/discovery.py` and shown in the Streamlit `Discovery` tab.
-- Discovery now uses EFTS as the primary path with RSS fallback and IPO-vs-secondary filtering.
-- Structured `lockup_conditions` data now exists in `enrich_company()`, but the UI does not yet surface it directly.
+- Discovery uses EFTS as the primary path with RSS fallback and IPO-vs-secondary filtering.
+- Structured `lockup_conditions` data now exists in `enrich_company()`, but the UI does not yet surface it as its own structured panel.
+
+## Needs Follow-up
+- Discovery entity resolution needs stronger live mapping: the `Discovery` tab currently shows `Unknown` company names and blank tickers for some EFTS hits.
+- Principal holder extraction still needs better live coverage: ALAB currently reports `Principal stockholder table not extracted cleanly` even though the rest of the parser works.
 
 ## Needs Regression Tests
 - Add parser tests for greenshoe disambiguation.
