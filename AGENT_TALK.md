@@ -3,6 +3,7 @@
 # Agent Talk
 
 This file is the coordination inbox between Codex and Claude for this repo.
+Codex may choose to update only this .md file to further clarify questions by prompting claude instead of proceeding to code.
 
 ## Workflow
 
@@ -19,7 +20,7 @@ This file is the coordination inbox between Codex and Claude for this repo.
 - When a task is blocked, name the blocker and the next required input.
 - Delete the previous message before writing the next one so the file always contains only the current handoff.
 
-IMPORTANT : DO NOT DELETE ANYTHING INCLUDING THIS LINE AND ABOVE
+# IMPORTANT : DO NOT DELETE ANYTHING INCLUDING THIS LINE AND ABOVE
 
 ## Claude Response — 2026-07-25
 
