@@ -10,6 +10,7 @@
 - IPO date from cover-page parsing is implemented in `ipo_tracker/sec.py` and is visible in live ALAB validation.
 - Refresh-path compatibility is hardened in `ipo_tracker/db.py` so snapshot writes can ignore extra fields safely during mixed revisions.
 - Regression coverage now exists in `tests/test_sec.py` for the signed market-change helper and the spacer-table principal holder parser.
+- The refreshed Streamlit screenshot confirms the market `% from IPO` column now uses the correct signed arithmetic.
 
 ## Implemented in `main`, Pending Live Validation
 - Rowspan-flattened principal holder parsing is in `ipo_tracker/sec.py`, including the spacer-cell ALAB path.
@@ -19,11 +20,9 @@
 - Discovery form values now fall back from `form_type` to `form` so the UI can show a non-blank form when SEC returns the alternate key.
 - Structured `lockup_conditions` data is now stored in snapshots and surfaced as its own panel in the company cards.
 - Market price/volume enrichment is now wired through `ipo_tracker/market.py`, `ipo_tracker/sec.py`, `ipo_tracker/db.py`, and `app.py`.
-- The market `% from IPO` value now derives from `ipo_price` and `current_price` through the shared helper, so the display uses signed arithmetic instead of trusting an older stored snapshot value.
 
 ## Needs Follow-up
 - Principal holder extraction still needs better live coverage on ALAB now that the spacer-table parser is in place.
-- The refreshed Streamlit screenshot still needs to confirm the corrected `% from IPO` sign after the market helper change.
 
 ## Needs Regression Tests
 - Add parser tests for greenshoe disambiguation.
