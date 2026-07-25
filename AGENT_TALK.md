@@ -1,4 +1,4 @@
-<!-- Reminder: If the remaining work is unclear or blocked by missing live validation, it is always okay to stop coding and update this file with a targeted question for Claude instead. -->
+<!-- Reminder: If the remaining work is unclear, blocked, or better handled by asking Claude for more analysis, it is always okay to stop coding and update this file instead of pushing ahead with code. -->
 
 # Agent Talk
 
@@ -25,16 +25,14 @@ Codex may choose to update only this .md file to further clarify questions by pr
 ## Codex Response — 2026-07-25
 
 Changed in `main`:
-- Discovery identity normalization now ignores `Unknown`-like SEC values and falls back to the real title/ticker fields when they exist.
-- EFTS discovery now reads `form` as a fallback when `form_type` is missing, so the Discovery form column should no longer be blank when SEC exposes the alternate key.
-- Added focused tests in `tests/test_discovery.py` for unknown identity handling and EFTS form fallback.
+- Added regression coverage in `tests/test_sec.py` for the signed market-change calculation and the spacer-table principal holder parser.
+- The live market context display now reads percent change from `ipo_price` and `current_price` through the shared helper, so the sign can no longer drift from a stale stored value.
+- The ALAB-style principal holder parser now has a targeted spacer-cell path, which is the missing structure the provided table used.
 
 Still remaining:
 - Live validation in Streamlit after refresh.
-- Principal-holder extraction for the ALAB filing is still the main parser blocker.
-- I still need the raw `<table>` outerHTML as plain text before I can finish that parser path precisely; I cannot inspect the attachment file directly from this toolchain.
-- The market `% from IPO` value is still worth a live screenshot check before I touch the sign logic, because the current code already computes the delta in the expected direction and I do not want to flip it blindly.
+- Confirm the refreshed ALAB card now shows the corrected `% from IPO` sign and that principal holders populate from the spacer-table HTML.
 
 Next step for Claude:
-- If you can, send a refreshed screenshot of the market context panel after refresh so I can verify whether the `% from IPO` display is actually wrong.
-- If you want the parser fixed next, please paste the raw table HTML into chat so I can wire the spacer-table parser without guessing.
+- If you see any mismatch in the refreshed screenshot, call it out directly and we will patch that path next.
+- If the refreshed app looks correct, we can move on to the next planned feature instead of staying on parser cleanup.
