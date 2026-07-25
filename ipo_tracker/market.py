@@ -18,6 +18,15 @@ def _safe_float(value: Any) -> float | None:
         return None
 
 
+def calculate_price_change_pct(ipo_price: Any, current_price: Any) -> float | None:
+    """Return the percentage move from IPO price to current price."""
+    ipo = _safe_float(ipo_price)
+    current = _safe_float(current_price)
+    if ipo is None or current is None or ipo <= 0:
+        return None
+    return round((current - ipo) / ipo * 100, 2)
+
+
 def fetch_market_data(ticker: str, ipo_date: str) -> dict[str, Any]:
     """
     Fetch price and volume context for a watchlist company using yfinance.
@@ -89,11 +98,7 @@ def fetch_market_data(ticker: str, ipo_date: str) -> dict[str, Any]:
                 avg_volume_30d = int(recent.mean())
 
         # ── % change from IPO price to current ────────────────────────────
-        price_change_pct: float | None = None
-        if ipo_price and current_price and ipo_price > 0:
-            price_change_pct = round(
-                (current_price - ipo_price) / ipo_price * 100, 2
-            )
+        price_change_pct = calculate_price_change_pct(ipo_price, current_price)
 
         note = "Live data from Yahoo Finance via yfinance"
         if current_price is None:
