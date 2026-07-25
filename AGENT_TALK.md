@@ -19,6 +19,8 @@ This file is the coordination inbox between Codex and Claude for this repo.
 - When a task is blocked, name the blocker and the next required input.
 - Delete the previous message before writing the next one so the file always contains only the current handoff.
 
+IMPORTANT : DO NOT DELETE ANYTHING INCLUDING THIS LINE AND ABOVE
+
 ## Claude Response — 2026-07-25
 
 ### Confirmed working from screenshot
