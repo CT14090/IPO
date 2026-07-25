@@ -18,6 +18,7 @@ from ipo_tracker.db import (
     webhook_event_exists,
 )
 from ipo_tracker.discovery import discover_recent_ipo_candidates
+from ipo_tracker.market import calculate_price_change_pct
 from ipo_tracker.sec import enrich_company
 
 
@@ -45,32 +46,55 @@ def ensure_sec_user_agent() -> str:
     return user_agent
 
 
+def _market_price_change_pct(row: dict) -> float | None:
+    calculated = calculate_price_change_pct(row.get("ipo_price"), row.get("current_price"))
+    if calculated is not None:
+        return calculated
+    stored = row.get("price_change_pct")
+    if stored is None:
+        return None
+    try:
+        return float(stored)
+    except (TypeError, ValueError):
+        return None
+
+
+def _persist_snapshot(company_id: int, enriched: dict) -> None:
+    """
+    Keep refreshes resilient if a deployed app revision temporarily lags behind
+    the latest database schema.
+    """
+    price_change_pct = _market_price_change_pct(enriched)
+    snapshot_kwargs = {
+        "filing_form": enriched["filing_form"],
+        "filing_date": enriched["filing_date"],
+        "source_url": enriched["source_url"],
+        "lockup_days": enriched["lockup_days"],
+        "unlock_date": enriched["unlock_date"],
+        "principal_holders": enriched["principal_holders"],
+        "lockup_source": enriched["lockup_source"],
+        "lockup_conditions": enriched.get("lockup_conditions"),
+        "ipo_price": enriched.get("ipo_price"),
+        "current_price": enriched.get("current_price"),
+        "price_change_pct": price_change_pct,
+        "avg_volume_30d": enriched.get("avg_volume_30d"),
+        "market_cap": enriched.get("market_cap"),
+        "market_data_note": enriched.get("market_data_note", ""),
+        "confidence_score": enriched["confidence_score"],
+        "confidence_label": enriched["confidence_label"],
+        "confidence_details": enriched["confidence_details"],
+        "notes": enriched["notes"],
+    }
+    upsert_snapshot(company_id, **snapshot_kwargs)
+
+
 def refresh_live_data() -> list[dict]:
     ensure_sec_user_agent()
     rows = []
     for company in load_dashboard_rows():
         enriched = enrich_company(company)
-        upsert_snapshot(
-            company["company_id"],
-            filing_form=enriched["filing_form"],
-            filing_date=enriched["filing_date"],
-            source_url=enriched["source_url"],
-            lockup_days=enriched["lockup_days"],
-            unlock_date=enriched["unlock_date"],
-            principal_holders=enriched["principal_holders"],
-            lockup_source=enriched["lockup_source"],
-            lockup_conditions=enriched.get("lockup_conditions"),
-            ipo_price=enriched.get("ipo_price"),
-            current_price=enriched.get("current_price"),
-            price_change_pct=enriched.get("price_change_pct"),
-            avg_volume_30d=enriched.get("avg_volume_30d"),
-            market_cap=enriched.get("market_cap"),
-            market_data_note=enriched.get("market_data_note", ""),
-            confidence_score=enriched["confidence_score"],
-            confidence_label=enriched["confidence_label"],
-            confidence_details=enriched["confidence_details"],
-            notes=enriched["notes"],
-        )
+        _persist_snapshot(company["company_id"], enriched)
+        enriched["price_change_pct"] = _market_price_change_pct(enriched)
         rows.append({**company, **enriched})
     return rows
 
@@ -257,7 +281,7 @@ def render_market_context(row: dict) -> None:
     values = (
         row.get("ipo_price"),
         row.get("current_price"),
-        row.get("price_change_pct"),
+        _market_price_change_pct(row),
         row.get("avg_volume_30d"),
         row.get("market_cap"),
         row.get("market_data_note"),
@@ -269,7 +293,7 @@ def render_market_context(row: dict) -> None:
         col1, col2, col3, col4, col5 = st.columns(5)
         col1.metric("IPO price", _format_currency(row.get("ipo_price")))
         col2.metric("Current price", _format_currency(row.get("current_price")))
-        col3.metric("% from IPO", _format_percent(row.get("price_change_pct")))
+        col3.metric("% from IPO", _format_percent(_market_price_change_pct(row)))
         col4.metric("30D avg volume", _format_integer(row.get("avg_volume_30d")))
         col5.metric("Market cap", _format_integer(row.get("market_cap")))
         if row.get("market_data_note"):
@@ -448,7 +472,7 @@ with overview_tab:
             "Lock-up Days": row["lockup_days"],
             "IPO Price": _format_currency(row.get("ipo_price")),
             "Current Price": _format_currency(row.get("current_price")),
-            "% From IPO": _format_percent(row.get("price_change_pct")),
+            "% From IPO": _format_percent(_market_price_change_pct(row)),
             "30D Avg Volume": _format_integer(row.get("avg_volume_30d")),
             "Market Cap": _format_integer(row.get("market_cap")),
             "Source": row["lockup_source"],
