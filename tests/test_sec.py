@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from ipo_tracker.config import DEFAULT_LOCKUP_DAYS
+from ipo_tracker.market import calculate_price_change_pct
 from ipo_tracker.sec import assess_data_confidence, extract_lockup_days, extract_principal_holders
 
 
@@ -68,6 +69,64 @@ class SecParserTests(unittest.TestCase):
         self.assertEqual(holders[1]["holder"], "Founder Holdings LLC")
         self.assertEqual(holders[1]["shares"], 8_765_432)
         self.assertAlmostEqual(holders[1]["percent"], 10.1)
+
+    def test_extract_principal_holders_handles_spacer_cells(self) -> None:
+        html = """
+        <html>
+          <body>
+            <h2>Principal and Selling Stockholders</h2>
+            <table>
+              <tr>
+                <th>Name of Beneficial Owner</th>
+                <th>Shares Beneficially Owned</th>
+                <th>Percent of Class</th>
+              </tr>
+              <tr>
+                <td>Sequoia Capital</td>
+                <td width="1%">&nbsp;</td>
+                <td>12,345,678</td>
+                <td width="1%">&nbsp;</td>
+                <td>14.2%</td>
+              </tr>
+              <tr>
+                <td>Founder Holdings LLC</td>
+                <td width="1%">&nbsp;</td>
+                <td>8,765,432</td>
+                <td width="1%">&nbsp;</td>
+                <td>10.1%</td>
+              </tr>
+              <tr>
+                <td>Total</td>
+                <td width="1%">&nbsp;</td>
+                <td>21,111,110</td>
+                <td width="1%">&nbsp;</td>
+                <td>24.3%</td>
+              </tr>
+            </table>
+          </body>
+        </html>
+        """
+
+        holders = extract_principal_holders(html)
+
+        self.assertEqual(len(holders), 2)
+        self.assertEqual(holders[0]["holder"], "Sequoia Capital")
+        self.assertEqual(holders[0]["shares"], 12_345_678)
+        self.assertAlmostEqual(holders[0]["percent"], 14.2)
+        self.assertEqual(holders[1]["holder"], "Founder Holdings LLC")
+        self.assertEqual(holders[1]["shares"], 8_765_432)
+        self.assertAlmostEqual(holders[1]["percent"], 10.1)
+
+    def test_calculate_price_change_pct_uses_signed_direction(self) -> None:
+        down_move = calculate_price_change_pct(62.03, 29.0)
+        up_move = calculate_price_change_pct(29.0, 62.03)
+
+        self.assertIsNotNone(down_move)
+        self.assertIsNotNone(up_move)
+        self.assertLess(down_move, 0)
+        self.assertGreater(up_move, 0)
+        self.assertAlmostEqual(down_move, -53.27, places=2)
+        self.assertAlmostEqual(up_move, 113.90, places=2)
 
     def test_assess_data_confidence_rewards_live_parsing(self) -> None:
         score, label, details = assess_data_confidence(
