@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import MagicMock, patch
 
-from ipo_tracker.discovery import parse_discovery_candidates
+from ipo_tracker.discovery import _resolve_company_identity, parse_discovery_candidates
 
 
 class DiscoveryTests(unittest.TestCase):
@@ -39,6 +40,21 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(candidate.form, "424B4")
         self.assertEqual(candidate.confidence, "High")
         self.assertIn("initial public offering", candidate.reason.lower())
+
+    @patch("ipo_tracker.discovery.fetch_submission_profile")
+    def test_resolve_company_identity_falls_back_to_submission_profile(self, fetch_profile: MagicMock) -> None:
+        fetch_profile.return_value = {
+            "title": "Fallback Name Corp.",
+            "ticker": "FBNC",
+            "exchange": "NASDAQ",
+        }
+
+        name, ticker, exchange, source = _resolve_company_identity(123456, {})
+
+        self.assertEqual(name, "Fallback Name Corp.")
+        self.assertEqual(ticker, "FBNC")
+        self.assertEqual(exchange, "NASDAQ")
+        self.assertIn("submissions profile", source)
 
 
 if __name__ == "__main__":

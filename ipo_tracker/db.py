@@ -72,16 +72,11 @@ def initialize_database() -> None:
                 unlock_date TEXT NOT NULL,
                 principal_holders_json TEXT NOT NULL,
                 lockup_source TEXT NOT NULL,
+                lockup_conditions_json TEXT NOT NULL DEFAULT '{}',
                 confidence_score INTEGER NOT NULL DEFAULT 0,
                 confidence_label TEXT NOT NULL DEFAULT 'Seeded',
                 confidence_details TEXT NOT NULL DEFAULT '',
                 notes TEXT NOT NULL,
-                ipo_price REAL,
-                current_price REAL,
-                price_change_pct REAL,
-                avg_volume_30d INTEGER,
-                market_cap INTEGER,
-                market_data_note TEXT NOT NULL DEFAULT '',
                 fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY(company_id) REFERENCES companies(id)
             )
@@ -101,16 +96,10 @@ def initialize_database() -> None:
             )
             """
         )
-        # Schema migrations — safe to run on existing databases
+        _ensure_column(conn, "company_snapshots", "lockup_conditions_json", "TEXT NOT NULL DEFAULT '{}'" )
         _ensure_column(conn, "company_snapshots", "confidence_score", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(conn, "company_snapshots", "confidence_label", "TEXT NOT NULL DEFAULT 'Seeded'")
         _ensure_column(conn, "company_snapshots", "confidence_details", "TEXT NOT NULL DEFAULT ''")
-        _ensure_column(conn, "company_snapshots", "ipo_price", "REAL")
-        _ensure_column(conn, "company_snapshots", "current_price", "REAL")
-        _ensure_column(conn, "company_snapshots", "price_change_pct", "REAL")
-        _ensure_column(conn, "company_snapshots", "avg_volume_30d", "INTEGER")
-        _ensure_column(conn, "company_snapshots", "market_cap", "INTEGER")
-        _ensure_column(conn, "company_snapshots", "market_data_note", "TEXT NOT NULL DEFAULT ''")
         conn.commit()
 
 
@@ -163,28 +152,21 @@ def upsert_snapshot(
     unlock_date: str,
     principal_holders: Sequence[dict] | None,
     lockup_source: str,
+    lockup_conditions: dict | None,
     confidence_score: int,
     confidence_label: str,
     confidence_details: str,
     notes: str,
-    ipo_price: float | None = None,
-    current_price: float | None = None,
-    price_change_pct: float | None = None,
-    avg_volume_30d: int | None = None,
-    market_cap: int | None = None,
-    market_data_note: str = "",
 ) -> None:
     with get_connection() as conn:
         conn.execute(
             """
             INSERT INTO company_snapshots (
                 company_id, filing_form, filing_date, source_url, lockup_days,
-                unlock_date, principal_holders_json, lockup_source,
-                confidence_score, confidence_label, confidence_details, notes,
-                ipo_price, current_price, price_change_pct,
-                avg_volume_30d, market_cap, market_data_note
+                unlock_date, principal_holders_json, lockup_source, lockup_conditions_json,
+                confidence_score, confidence_label, confidence_details, notes
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 company_id,
@@ -195,16 +177,11 @@ def upsert_snapshot(
                 unlock_date,
                 json.dumps(list(principal_holders or []), default=str),
                 lockup_source,
+                json.dumps(lockup_conditions or {}, default=str),
                 confidence_score,
                 confidence_label,
                 confidence_details,
                 notes,
-                ipo_price,
-                current_price,
-                price_change_pct,
-                avg_volume_30d,
-                market_cap,
-                market_data_note,
             ),
         )
         conn.commit()
@@ -247,16 +224,11 @@ def load_dashboard_rows() -> list[dict]:
                 "unlock_date": _row_value(snapshot, "unlock_date", None),
                 "principal_holders": json.loads(_row_value(snapshot, "principal_holders_json", "[]")),
                 "lockup_source": _row_value(snapshot, "lockup_source", "Seeded watchlist"),
+                "lockup_conditions": json.loads(_row_value(snapshot, "lockup_conditions_json", "{}")),
                 "confidence_score": int(_row_value(snapshot, "confidence_score", 0)),
                 "confidence_label": _row_value(snapshot, "confidence_label", "Seeded"),
                 "confidence_details": _row_value(snapshot, "confidence_details", "Seeded watchlist entry ready for SEC enrichment."),
                 "notes": _row_value(snapshot, "notes", "Seeded watchlist entry ready for SEC enrichment."),
-                "ipo_price": _row_value(snapshot, "ipo_price", None),
-                "current_price": _row_value(snapshot, "current_price", None),
-                "price_change_pct": _row_value(snapshot, "price_change_pct", None),
-                "avg_volume_30d": _row_value(snapshot, "avg_volume_30d", None),
-                "market_cap": _row_value(snapshot, "market_cap", None),
-                "market_data_note": _row_value(snapshot, "market_data_note", ""),
             }
         )
     return rows

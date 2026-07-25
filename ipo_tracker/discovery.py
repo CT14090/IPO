@@ -16,6 +16,7 @@ from .sec import normalize_cik, sec_headers
 
 ATOM_NS = "{http://www.w3.org/2005/Atom}"
 
+# ── Source URLs ────────────────────────────────────────────────────────────────
 EFTS_BASE = "https://efts.sec.gov/LATEST/search-index"
 CURRENT_FILINGS_RSS = {
     "424B4": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=424B4&owner=include&count=100&output=atom",
@@ -23,6 +24,8 @@ CURRENT_FILINGS_RSS = {
     "F-1":   "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=F-1&owner=include&count=100&output=atom",
 }
 
+# ── IPO vs. secondary / shelf filter signals ───────────────────────────────────
+# These run client-side on RSS results; EFTS already filters server-side via q=
 _IPO_POSITIVE_RE = re.compile(
     r"(initial public offering|our initial public offering|"
     r"first time we have offered|going public)",
@@ -82,7 +85,64 @@ def fetch_company_index() -> dict[int, dict[str, str]]:
     return index
 
 
+@lru_cache(maxsize=256)
+def fetch_submission_profile(cik: int) -> dict[str, str]:
+    """
+    Fallback identity lookup for CIKs that are not in the ticker index.
+
+    The submissions endpoint exists for all filers and gives us the entity name,
+    plus a ticker when one is available.
+    """
+    url = f"https://data.sec.gov/submissions/CIK{normalize_cik(cik)}.json"
+    try:
+        response = requests.get(url, headers=sec_headers(), timeout=30)
+        response.raise_for_status()
+    except requests.RequestException:
+        return {}
+
+    payload = response.json()
+    tickers = [str(item).strip() for item in payload.get("tickers", []) if str(item).strip()]
+    exchanges = [str(item).strip() for item in payload.get("exchanges", []) if str(item).strip()]
+    title = str(
+        payload.get("name")
+        or payload.get("entityName")
+        or payload.get("companyName")
+        or ""
+    ).strip()
+    return {
+        "ticker": tickers[0] if tickers else "",
+        "title": title,
+        "exchange": exchanges[0] if exchanges else "",
+    }
+
+
+def _resolve_company_identity(cik: int, company_index: dict[int, dict[str, str]]) -> tuple[str, str | None, str, str]:
+    meta = company_index.get(cik, {})
+    profile = fetch_submission_profile(cik)
+
+    name = meta.get("title") or profile.get("title") or f"CIK {cik}"
+    ticker = meta.get("ticker") or profile.get("ticker") or None
+    exchange = meta.get("exchange") or profile.get("exchange") or ""
+
+    source_parts: list[str] = []
+    if meta:
+        source_parts.append("ticker index")
+    if profile:
+        source_parts.append("submissions profile")
+    if not source_parts:
+        source_parts.append("SEC lookup")
+
+    return name, ticker, exchange, ", ".join(source_parts)
+
+
 def _ipo_confidence(title: str, summary: str, has_ticker: bool) -> tuple[str, str]:
+    """
+    Score a filing as High / Medium / Low IPO confidence.
+
+    Low    - explicit secondary / shelf signal in text
+    High   - explicit IPO language AND ticker is mapped
+    Medium - no disqualifying signals, or IPO language without ticker
+    """
     combined = f"{title} {summary}"
     disq = _SECONDARY_DISQUALIFY_RE.search(combined)
     if disq:
@@ -94,6 +154,7 @@ def _ipo_confidence(title: str, summary: str, has_ticker: bool) -> tuple[str, st
     return "Medium", "No disqualifying signals; unverified"
 
 
+# ── EFTS full-text search (primary path) ──────────────────────────────────────
 def _search_efts(
     *,
     watched_ciks: set[int],
@@ -101,6 +162,13 @@ def _search_efts(
     lookback_days: int = 90,
     page_size: int = 40,
 ) -> list[DiscoveryCandidate]:
+    """
+    Query efts.sec.gov full-text search for 424B4 / S-1 / F-1 filings that
+    explicitly mention 'initial public offering'. No API key required.
+
+    Server-side filtering removes secondaries and shelf registrations before
+    the response reaches us, so client-side scoring is a safety net only.
+    """
     start = (date.today() - timedelta(days=lookback_days)).isoformat()
     end = date.today().isoformat()
     params: dict[str, Any] = {
@@ -141,9 +209,9 @@ def _search_efts(
             continue
         seen.add(cik)
 
-        meta = company_index.get(cik, {})
-        ticker = meta.get("ticker") or None
-        name = meta.get("title") or entity_name or "Unknown"
+        name, ticker, exchange, source = _resolve_company_identity(cik, company_index)
+        if not name or name == f"CIK {cik}":
+            name = entity_name or f"CIK {cik}"
         confidence, reason = _ipo_confidence(entity_name, "", bool(ticker))
         if confidence == "Low":
             continue
@@ -153,6 +221,11 @@ def _search_efts(
             f"?action=getcompany&CIK={normalize_cik(cik)}"
             f"&type={form_type}&dateb=&owner=include&count=1"
         )
+        reason_bits = ["EFTS full-text match", reason]
+        if source:
+            reason_bits.append(f"resolved via {source}")
+        if exchange:
+            reason_bits.append(f"exchange: {exchange}")
         candidates.append(DiscoveryCandidate(
             company_name=name,
             ticker=ticker,
@@ -160,13 +233,14 @@ def _search_efts(
             form=form_type,
             filing_date=file_date,
             filing_url=filing_url,
-            reason=f"EFTS full-text match; {reason}",
+            reason="; ".join(reason_bits),
             confidence=confidence,
         ))
 
     return candidates
 
 
+# ── RSS current-filings feed (fallback path) ──────────────────────────────────
 def _entry_text(entry: ET.Element, tag_name: str) -> str:
     element = entry.find(f"{ATOM_NS}{tag_name}")
     if element is None or element.text is None:
@@ -199,6 +273,7 @@ def parse_discovery_candidates(
     watched_ciks: set[int],
     company_index: dict[int, dict[str, str]],
 ) -> list[DiscoveryCandidate]:
+    """Parse an EDGAR Atom RSS feed entry list into DiscoveryCandidate objects."""
     root = ET.fromstring(feed_xml)
     candidates: list[DiscoveryCandidate] = []
     seen: set[int] = set()
@@ -212,15 +287,20 @@ def parse_discovery_candidates(
         if cik is None or cik in watched_ciks or cik in seen:
             continue
 
-        meta = company_index.get(cik, {})
-        ticker = meta.get("ticker") or None
-        name = meta.get("title") or title.replace(f"{form} -", "").strip() or title
+        name, ticker, exchange, source = _resolve_company_identity(cik, company_index)
+        if not name or name == f"CIK {cik}":
+            name = title.replace(f"{form} -", "").strip() or title or f"CIK {cik}"
 
         confidence, reason = _ipo_confidence(title, summary, bool(ticker))
         if confidence == "Low":
-            continue
+            continue  # drop confirmed secondaries / shelf registrations
 
         seen.add(cik)
+        reason_bits = [f"SEC RSS ({form})", reason]
+        if source:
+            reason_bits.append(f"resolved via {source}")
+        if exchange:
+            reason_bits.append(f"exchange: {exchange}")
         candidates.append(DiscoveryCandidate(
             company_name=name,
             ticker=ticker,
@@ -228,20 +308,21 @@ def parse_discovery_candidates(
             form=form,
             filing_date=filing_date,
             filing_url=filing_url,
-            reason=f"SEC RSS ({form}); {reason}",
+            reason="; ".join(reason_bits),
             confidence=confidence,
         ))
 
     return candidates
 
 
+# ── Public entrypoint ─────────────────────────────────────────────────────────
 def discover_recent_ipo_candidates(limit: int = 20) -> list[dict[str, Any]]:
     """
     Discover recent IPO candidates from SEC filings.
 
-    Primary path  — EFTS full-text search with q="initial public offering",
+    Primary path  - EFTS full-text search with q="initial public offering",
                     which filters out secondaries server-side.
-    Fallback path — RSS current-filings feeds for 424B4, S-1, F-1 with
+    Fallback path - RSS current-filings feeds for 424B4, S-1, F-1 with
                     client-side IPO/secondary scoring.
 
     Results sorted: High confidence first, then most-recent filing date.
@@ -250,8 +331,10 @@ def discover_recent_ipo_candidates(limit: int = 20) -> list[dict[str, Any]]:
     watched_ciks = {company["cik"] for company in WATCHLIST}
     company_index = fetch_company_index()
 
+    # Primary: EFTS full-text search
     candidates = _search_efts(watched_ciks=watched_ciks, company_index=company_index)
 
+    # Fallback: RSS feeds if EFTS unavailable
     if not candidates:
         by_cik: dict[int, DiscoveryCandidate] = {}
         for form, url in CURRENT_FILINGS_RSS.items():
@@ -271,10 +354,8 @@ def discover_recent_ipo_candidates(limit: int = 20) -> list[dict[str, Any]]:
                     by_cik[candidate.cik] = candidate
         candidates = list(by_cik.values())
 
+    candidates.sort(key=lambda c: c.filing_date, reverse=True)
     priority = {"High": 0, "Medium": 1, "Low": 2}
-    candidates.sort(key=lambda c: (priority.get(c.confidence, 9), c.filing_date), reverse=False)
-    sorted_final: list[DiscoveryCandidate] = []
-    for _, group in groupby(candidates, key=lambda c: c.confidence):
-        sorted_final.extend(sorted(group, key=lambda c: c.filing_date, reverse=True))
+    sorted_candidates = sorted(candidates, key=lambda c: (priority.get(c.confidence, 9), c.filing_date), reverse=False)
 
-    return [c.as_dict() for c in sorted_final[:limit]]
+    return [c.as_dict() for c in sorted_candidates[:limit]]

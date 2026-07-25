@@ -4,15 +4,28 @@
 - Confidence score / parse quality is implemented in `ipo_tracker/sec.py`, stored in `ipo_tracker/db.py`, and displayed in `app.py`.
 - Crash fix / schema resilience is implemented; older snapshot rows load safely and missing confidence fields no longer break the app.
 - Streamlit dashboard, deployment docs, and Discord webhook helper are already in place.
+- Greenshoe disambiguation is implemented in `ipo_tracker/sec.py` and is visible in live ALAB validation.
+- Dual-trigger / early release detection is implemented in `ipo_tracker/sec.py` and is visible in live ALAB validation.
+- Post-IPO 8-K monitoring is implemented in `ipo_tracker/sec.py` and is visible in live ALAB validation.
+- IPO date from cover-page parsing is implemented in `ipo_tracker/sec.py` and is visible in live ALAB validation.
 
 ## Implemented in `main`, Pending Live Validation
-- Greenshoe disambiguation fix is in `ipo_tracker/sec.py`.
-- Dual-trigger / early release detection is in `ipo_tracker/sec.py`.
-- Post-IPO 8-K monitoring is in `ipo_tracker/sec.py`.
-- IPO date from cover-page parsing is in `ipo_tracker/sec.py`.
 - Rowspan-flattened principal holder parsing is in `ipo_tracker/sec.py`.
 - Automated IPO discovery is in `ipo_tracker/discovery.py` and shown in the Streamlit `Discovery` tab.
-- Discovery now uses EFTS as the primary path with RSS fallback and IPO-vs-secondary filtering.
+- Discovery uses EFTS as the primary path with RSS fallback and IPO-vs-secondary filtering.
+- Discovery entity resolution now falls back to SEC submissions profiles so names can populate even when the ticker index misses a CIK.
+- Structured `lockup_conditions` data is now stored in snapshots and surfaced as its own panel in the company cards.
+
+## Needs Follow-up
+- Principal holder extraction still needs better live coverage: ALAB currently reports `Principal stockholder table not extracted cleanly` even though the rest of the parser works.
+
+## Needs Regression Tests
+- Add parser tests for greenshoe disambiguation.
+- Add parser tests for early-release and earnings-trigger detection.
+- Add parser tests for 8-K amendment detection.
+- Add parser tests for cover-page IPO date extraction.
+- Add parser tests for rowspan-flattened holder extraction.
+- Add discovery tests that cover the EFTS primary path and the RSS fallback path.
 
 ## Next Up
 - Add yfinance price and volume enrichment.
