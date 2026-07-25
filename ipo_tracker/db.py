@@ -72,6 +72,7 @@ def initialize_database() -> None:
                 unlock_date TEXT NOT NULL,
                 principal_holders_json TEXT NOT NULL,
                 lockup_source TEXT NOT NULL,
+                lockup_conditions_json TEXT NOT NULL DEFAULT '{}',
                 confidence_score INTEGER NOT NULL DEFAULT 0,
                 confidence_label TEXT NOT NULL DEFAULT 'Seeded',
                 confidence_details TEXT NOT NULL DEFAULT '',
@@ -95,6 +96,7 @@ def initialize_database() -> None:
             )
             """
         )
+        _ensure_column(conn, "company_snapshots", "lockup_conditions_json", "TEXT NOT NULL DEFAULT '{}'" )
         _ensure_column(conn, "company_snapshots", "confidence_score", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(conn, "company_snapshots", "confidence_label", "TEXT NOT NULL DEFAULT 'Seeded'")
         _ensure_column(conn, "company_snapshots", "confidence_details", "TEXT NOT NULL DEFAULT ''")
@@ -150,6 +152,7 @@ def upsert_snapshot(
     unlock_date: str,
     principal_holders: Sequence[dict] | None,
     lockup_source: str,
+    lockup_conditions: dict | None,
     confidence_score: int,
     confidence_label: str,
     confidence_details: str,
@@ -160,10 +163,10 @@ def upsert_snapshot(
             """
             INSERT INTO company_snapshots (
                 company_id, filing_form, filing_date, source_url, lockup_days,
-                unlock_date, principal_holders_json, lockup_source,
+                unlock_date, principal_holders_json, lockup_source, lockup_conditions_json,
                 confidence_score, confidence_label, confidence_details, notes
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 company_id,
@@ -174,6 +177,7 @@ def upsert_snapshot(
                 unlock_date,
                 json.dumps(list(principal_holders or []), default=str),
                 lockup_source,
+                json.dumps(lockup_conditions or {}, default=str),
                 confidence_score,
                 confidence_label,
                 confidence_details,
@@ -220,6 +224,7 @@ def load_dashboard_rows() -> list[dict]:
                 "unlock_date": _row_value(snapshot, "unlock_date", None),
                 "principal_holders": json.loads(_row_value(snapshot, "principal_holders_json", "[]")),
                 "lockup_source": _row_value(snapshot, "lockup_source", "Seeded watchlist"),
+                "lockup_conditions": json.loads(_row_value(snapshot, "lockup_conditions_json", "{}")),
                 "confidence_score": int(_row_value(snapshot, "confidence_score", 0)),
                 "confidence_label": _row_value(snapshot, "confidence_label", "Seeded"),
                 "confidence_details": _row_value(snapshot, "confidence_details", "Seeded watchlist entry ready for SEC enrichment."),
