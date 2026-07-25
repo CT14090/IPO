@@ -4,7 +4,6 @@ import re
 from dataclasses import dataclass
 from datetime import date, timedelta
 from functools import lru_cache
-from itertools import groupby
 from typing import Any
 from xml.etree import ElementTree as ET
 
@@ -38,6 +37,18 @@ _SECONDARY_DISQUALIFY_RE = re.compile(
     r"shelf registration)",
     re.I,
 )
+
+_MISSING_IDENTITY_VALUES = {
+    "",
+    "-",
+    "—",
+    "na",
+    "n/a",
+    "none",
+    "null",
+    "unknown",
+    "unavailable",
+}
 
 
 @dataclass(slots=True)
@@ -116,13 +127,27 @@ def fetch_submission_profile(cik: int) -> dict[str, str]:
     }
 
 
+def _is_missing_identity(value: Any) -> bool:
+    if value is None:
+        return True
+    text = str(value).strip().lower()
+    return text in _MISSING_IDENTITY_VALUES
+
+
+def _pick_identity(*values: Any) -> str:
+    for value in values:
+        if not _is_missing_identity(value):
+            return str(value).strip()
+    return ""
+
+
 def _resolve_company_identity(cik: int, company_index: dict[int, dict[str, str]]) -> tuple[str, str | None, str, str]:
     meta = company_index.get(cik, {})
     profile = fetch_submission_profile(cik)
 
-    name = meta.get("title") or profile.get("title") or f"CIK {cik}"
-    ticker = meta.get("ticker") or profile.get("ticker") or None
-    exchange = meta.get("exchange") or profile.get("exchange") or ""
+    name = _pick_identity(meta.get("title"), profile.get("title")) or f"CIK {cik}"
+    ticker = _pick_identity(meta.get("ticker"), profile.get("ticker")) or None
+    exchange = _pick_identity(meta.get("exchange"), profile.get("exchange"))
 
     source_parts: list[str] = []
     if meta:
@@ -197,8 +222,8 @@ def _search_efts(
 
     for hit in hits:
         src = hit.get("_source", {})
-        entity_name = src.get("entity_name", "")
-        form_type = src.get("form_type", "")
+        entity_name = _pick_identity(src.get("entity_name"), src.get("company_name"), src.get("issuer_name"))
+        form_type = _pick_identity(src.get("form_type"), src.get("form"), src.get("type")) or "—"
         file_date = src.get("file_date", "")
 
         cik_match = re.match(r"^0*(\d+)-", hit.get("_id", ""))
@@ -210,8 +235,9 @@ def _search_efts(
         seen.add(cik)
 
         name, ticker, exchange, source = _resolve_company_identity(cik, company_index)
-        if not name or name == f"CIK {cik}":
-            name = entity_name or f"CIK {cik}"
+        name = _pick_identity(name, entity_name, f"CIK {cik}") or f"CIK {cik}"
+        ticker = _pick_identity(ticker, src.get("ticker"), src.get("symbol")) or None
+        exchange = _pick_identity(exchange)
         confidence, reason = _ipo_confidence(entity_name, "", bool(ticker))
         if confidence == "Low":
             continue
@@ -288,8 +314,13 @@ def parse_discovery_candidates(
             continue
 
         name, ticker, exchange, source = _resolve_company_identity(cik, company_index)
-        if not name or name == f"CIK {cik}":
-            name = title.replace(f"{form} -", "").strip() or title or f"CIK {cik}"
+        fallback_name = _pick_identity(
+            title.replace(f"{form} -", "").strip(),
+            title,
+            summary,
+            f"CIK {cik}",
+        )
+        name = _pick_identity(name, fallback_name, f"CIK {cik}") or f"CIK {cik}"
 
         confidence, reason = _ipo_confidence(title, summary, bool(ticker))
         if confidence == "Low":
