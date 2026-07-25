@@ -13,10 +13,10 @@
 - Rowspan-flattened principal holder parsing is in `ipo_tracker/sec.py`.
 - Automated IPO discovery is in `ipo_tracker/discovery.py` and shown in the Streamlit `Discovery` tab.
 - Discovery uses EFTS as the primary path with RSS fallback and IPO-vs-secondary filtering.
-- Structured `lockup_conditions` data now exists in `enrich_company()`, but the UI does not yet surface it as its own structured panel.
+- Discovery entity resolution now falls back to SEC submissions profiles so names can populate even when the ticker index misses a CIK.
+- Structured `lockup_conditions` data is now stored in snapshots and surfaced as its own panel in the company cards.
 
 ## Needs Follow-up
-- Discovery entity resolution needs stronger live mapping: the `Discovery` tab currently shows `Unknown` company names and blank tickers for some EFTS hits.
 - Principal holder extraction still needs better live coverage: ALAB currently reports `Principal stockholder table not extracted cleanly` even though the rest of the parser works.
 
 ## Needs Regression Tests
