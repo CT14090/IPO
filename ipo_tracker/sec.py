@@ -326,6 +326,91 @@ def _detect_early_release(section_text: str) -> tuple[bool, bool, int | None, st
     return has_early, has_earnings, pct, description
 
 
+def _parse_spacer_table_row(tr: Any) -> dict[str, Any] | None:
+    cells = tr.xpath("./td|./th")
+    if not cells:
+        return None
+
+    row_text = _clean_cell_text(" ".join(cell.text_content() for cell in cells)).lower()
+    if any(
+        keyword in row_text
+        for keyword in (
+            "name of beneficial",
+            "shares beneficially",
+            "being offered",
+            "5% stockholder",
+            "named executive",
+            "directors and executive",
+            "shares of common stock being offered",
+            "shares beneficially owned following this offering",
+        )
+    ):
+        return None
+
+    value_cells = [
+        _clean_cell_text(cell.text_content())
+        for cell in cells
+        if (cell.get("width") or "").strip() != "1%" and _clean_cell_text(cell.text_content())
+    ]
+    if len(value_cells) < 2:
+        return None
+
+    holder = re.sub(r"\(\d+\)\s*$", "", value_cells[0]).strip()
+    if not holder:
+        return None
+    holder_lower = holder.lower()
+    if any(token in holder_lower for token in ("all directors", "total", "aggregate")):
+        return None
+    if _is_placeholder_holder(holder):
+        return None
+
+    shares = _parse_holder_measure("shares", value_cells[1]) if len(value_cells) > 1 else None
+    percent = _parse_holder_measure("percent", value_cells[2]) if len(value_cells) > 2 else None
+    if shares is None and percent is None:
+        return None
+
+    return {"holder": holder, "shares": shares, "percent": percent}
+
+
+def _extract_holders_from_spacer_table(html_text: str) -> list[dict[str, Any]]:
+    """
+    Parse principal stockholder tables that use width=1% spacer <td> cells
+    between the actual data cells.
+    """
+    try:
+        import lxml.html as lh
+    except ImportError:
+        return []
+
+    try:
+        root = lh.fromstring(html_text)
+    except Exception:
+        return []
+
+    target_table = None
+    for table in root.xpath(".//table"):
+        header_text = _clean_cell_text(table.text_content()).lower()
+        if "beneficial owner" in header_text or "principal stockholder" in header_text or "principal and selling stockholders" in header_text:
+            target_table = table
+            break
+    if target_table is None:
+        return []
+
+    results: list[dict[str, Any]] = []
+    seen: set[tuple[str, Any, Any]] = set()
+    for tr in target_table.xpath(".//tr"):
+        record = _parse_spacer_table_row(tr)
+        if not record:
+            continue
+        key = (record["holder"].lower(), record.get("shares"), record.get("percent"))
+        if key in seen:
+            continue
+        seen.add(key)
+        results.append(record)
+
+    return results[:10]
+
+
 def extract_lockup_conditions(html_text: str) -> LockupConditions:
     """
     Full lock-up extraction returning a structured LockupConditions object.
@@ -583,6 +668,10 @@ def _read_html_tables(html_text: str, match: str | None = None) -> list[pd.DataF
 
 
 def extract_principal_holders(html_text: str) -> list[dict[str, Any]]:
+    spacer_records = _extract_holders_from_spacer_table(html_text)
+    if spacer_records:
+        return spacer_records
+
     tables: list[pd.DataFrame] = []
     for match in PRINCIPAL_TABLE_MATCHES:
         tables.extend(_read_html_tables(html_text, match=match))
