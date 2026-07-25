@@ -60,6 +60,12 @@ def refresh_live_data() -> list[dict]:
             principal_holders=enriched["principal_holders"],
             lockup_source=enriched["lockup_source"],
             lockup_conditions=enriched.get("lockup_conditions"),
+            ipo_price=enriched.get("ipo_price"),
+            current_price=enriched.get("current_price"),
+            price_change_pct=enriched.get("price_change_pct"),
+            avg_volume_30d=enriched.get("avg_volume_30d"),
+            market_cap=enriched.get("market_cap"),
+            market_data_note=enriched.get("market_data_note", ""),
             confidence_score=enriched["confidence_score"],
             confidence_label=enriched["confidence_label"],
             confidence_details=enriched["confidence_details"],
@@ -200,6 +206,33 @@ def progress_badge(days_to_expiration: int) -> str:
     return f"{days_to_expiration} days"
 
 
+def _format_currency(value) -> str:
+    if value in (None, ""):
+        return "—"
+    try:
+        return f"${float(value):,.2f}"
+    except (TypeError, ValueError):
+        return "—"
+
+
+def _format_integer(value) -> str:
+    if value in (None, ""):
+        return "—"
+    try:
+        return f"{int(value):,}"
+    except (TypeError, ValueError):
+        return "—"
+
+
+def _format_percent(value) -> str:
+    if value in (None, ""):
+        return "—"
+    try:
+        return f"{float(value):+.2f}%"
+    except (TypeError, ValueError):
+        return "—"
+
+
 def render_lockup_conditions(conditions: dict) -> None:
     has_values = any(value not in (None, "", [], {}) for value in conditions.values())
     if not has_values:
@@ -213,14 +246,34 @@ def render_lockup_conditions(conditions: dict) -> None:
             "Early release pct",
             f"{conditions['early_release_pct']}%" if conditions.get("early_release_pct") is not None else "—",
         )
-        col4.metric(
-            "8-K amendment",
-            conditions.get("amendment_date") or "None",
-        )
+        col4.metric("8-K amendment", conditions.get("amendment_date") or "None")
         if conditions.get("early_release_description"):
             st.caption(conditions["early_release_description"])
         if conditions.get("amendment_url"):
             st.link_button("Open 8-K amendment", conditions["amendment_url"])
+
+
+def render_market_context(row: dict) -> None:
+    values = (
+        row.get("ipo_price"),
+        row.get("current_price"),
+        row.get("price_change_pct"),
+        row.get("avg_volume_30d"),
+        row.get("market_cap"),
+        row.get("market_data_note"),
+    )
+    if not any(value not in (None, "", [], {}) for value in values):
+        return
+
+    with st.expander("Market context", expanded=False):
+        col1, col2, col3, col4, col5 = st.columns(5)
+        col1.metric("IPO price", _format_currency(row.get("ipo_price")))
+        col2.metric("Current price", _format_currency(row.get("current_price")))
+        col3.metric("% from IPO", _format_percent(row.get("price_change_pct")))
+        col4.metric("30D avg volume", _format_integer(row.get("avg_volume_30d")))
+        col5.metric("Market cap", _format_integer(row.get("market_cap")))
+        if row.get("market_data_note"):
+            st.caption(row["market_data_note"])
 
 
 def render_company_card(row: dict) -> None:
@@ -246,6 +299,7 @@ def render_company_card(row: dict) -> None:
             if confidence_details:
                 st.caption(confidence_details)
             render_lockup_conditions(row.get("lockup_conditions", {}))
+            render_market_context(row)
         with right:
             if row["source_url"]:
                 st.link_button("Open SEC filing", row["source_url"])
@@ -392,6 +446,11 @@ with overview_tab:
             "Confidence": f"{row.get('confidence_label', 'Seeded')} ({row.get('confidence_score', 0)}/100)",
             "Status": row["status"],
             "Lock-up Days": row["lockup_days"],
+            "IPO Price": _format_currency(row.get("ipo_price")),
+            "Current Price": _format_currency(row.get("current_price")),
+            "% From IPO": _format_percent(row.get("price_change_pct")),
+            "30D Avg Volume": _format_integer(row.get("avg_volume_30d")),
+            "Market Cap": _format_integer(row.get("market_cap")),
             "Source": row["lockup_source"],
         }
         for row in rows
