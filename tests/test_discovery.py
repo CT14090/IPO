@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import MagicMock, patch
 
-from ipo_tracker.discovery import _resolve_company_identity, parse_discovery_candidates
+from ipo_tracker.discovery import _resolve_company_identity, _search_efts, parse_discovery_candidates
 
 
 class DiscoveryTests(unittest.TestCase):
@@ -42,19 +42,60 @@ class DiscoveryTests(unittest.TestCase):
         self.assertIn("initial public offering", candidate.reason.lower())
 
     @patch("ipo_tracker.discovery.fetch_submission_profile")
-    def test_resolve_company_identity_falls_back_to_submission_profile(self, fetch_profile: MagicMock) -> None:
+    def test_resolve_company_identity_treats_unknown_values_as_missing(self, fetch_profile: MagicMock) -> None:
         fetch_profile.return_value = {
-            "title": "Fallback Name Corp.",
-            "ticker": "FBNC",
-            "exchange": "NASDAQ",
+            "title": "Unknown",
+            "ticker": "",
+            "exchange": "",
         }
 
         name, ticker, exchange, source = _resolve_company_identity(123456, {})
 
-        self.assertEqual(name, "Fallback Name Corp.")
-        self.assertEqual(ticker, "FBNC")
-        self.assertEqual(exchange, "NASDAQ")
+        self.assertEqual(name, "CIK 123456")
+        self.assertIsNone(ticker)
+        self.assertEqual(exchange, "")
         self.assertIn("submissions profile", source)
+
+    @patch("ipo_tracker.discovery.fetch_submission_profile")
+    @patch("ipo_tracker.discovery.requests.get")
+    def test_search_efts_uses_form_fallback_and_title_when_form_type_missing(
+        self,
+        mock_get: MagicMock,
+        fetch_profile: MagicMock,
+    ) -> None:
+        fetch_profile.return_value = {
+            "title": "Example Holdings Inc.",
+            "ticker": "",
+            "exchange": "NASDAQ",
+        }
+
+        response = MagicMock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "hits": {
+                "hits": [
+                    {
+                        "_id": "0000123456-26-000001",
+                        "_source": {
+                            "entity_name": "Unknown",
+                            "company_name": "Example Holdings Inc.",
+                            "file_date": "2026-07-21",
+                            "form": "424B4",
+                        },
+                    }
+                ]
+            }
+        }
+        mock_get.return_value = response
+
+        candidates = _search_efts(watched_ciks=set(), company_index={})
+
+        self.assertEqual(len(candidates), 1)
+        candidate = candidates[0]
+        self.assertEqual(candidate.company_name, "Example Holdings Inc.")
+        self.assertEqual(candidate.form, "424B4")
+        self.assertEqual(candidate.ticker, "")
+        self.assertEqual(candidate.confidence, "Medium")
 
 
 if __name__ == "__main__":
