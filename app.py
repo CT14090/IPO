@@ -63,6 +63,12 @@ def refresh_live_data() -> list[dict]:
             confidence_label=enriched["confidence_label"],
             confidence_details=enriched["confidence_details"],
             notes=enriched["notes"],
+            ipo_price=enriched.get("ipo_price"),
+            current_price=enriched.get("current_price"),
+            price_change_pct=enriched.get("price_change_pct"),
+            avg_volume_30d=enriched.get("avg_volume_30d"),
+            market_cap=enriched.get("market_cap"),
+            market_data_note=enriched.get("market_data_note", ""),
         )
         rows.append({**company, **enriched})
     return rows
@@ -194,16 +200,49 @@ def progress_badge(days_to_expiration: int) -> str:
         return "Today"
     if days_to_expiration == 1:
         return "1 day"
-    if days_to_expiration <= 7:
-        return f"{days_to_expiration} days"
     return f"{days_to_expiration} days"
+
+
+def _fmt_price(val: float | None) -> str:
+    return f"${val:,.2f}" if val is not None else "—"
+
+
+def _fmt_pct(val: float | None) -> str:
+    if val is None:
+        return "—"
+    sign = "+" if val >= 0 else ""
+    return f"{sign}{val:.1f}%"
+
+
+def _fmt_volume(val: int | None) -> str:
+    if val is None:
+        return "—"
+    if val >= 1_000_000:
+        return f"{val / 1_000_000:.1f}M"
+    if val >= 1_000:
+        return f"{val / 1_000:.0f}K"
+    return str(val)
+
+
+def _fmt_market_cap(val: int | None) -> str:
+    if val is None:
+        return "—"
+    if val >= 1_000_000_000:
+        return f"${val / 1_000_000_000:.1f}B"
+    if val >= 1_000_000:
+        return f"${val / 1_000_000:.0f}M"
+    return f"${val:,}"
 
 
 def render_company_card(row: dict) -> None:
     confidence_score = row.get("confidence_score", 0)
     confidence_label = row.get("confidence_label", "Seeded")
     confidence_details = row.get("confidence_details", "Seeded watchlist entry ready for SEC enrichment.")
-    with st.expander(f"{row['ticker']}  |  {row['company_name']}", expanded=row["days_to_expiration"] <= DEFAULT_ALERT_DAYS):
+
+    with st.expander(
+        f"{row['ticker']}  |  {row['company_name']}",
+        expanded=row["days_to_expiration"] <= DEFAULT_ALERT_DAYS,
+    ):
         left, right = st.columns([2, 1])
         with left:
             st.write(
@@ -215,12 +254,32 @@ def render_company_card(row: dict) -> None:
                 text=f"{progress_badge(row['days_to_expiration'])} from IPO to unlock",
             )
             st.caption(
-                f"Theme: {row['theme']} | CIK: {row['cik']} | Filing form: {row['filing_form'] or 'not parsed yet'}"
+                f"Theme: {row['theme']} | CIK: {row['cik']} | "
+                f"Filing form: {row['filing_form'] or 'not parsed yet'}"
             )
             st.caption(row["notes"])
             st.caption(f"Data confidence: {confidence_label} ({confidence_score}/100)")
             if confidence_details:
                 st.caption(confidence_details)
+
+            # ── Feature 7: market context ──────────────────────────────────
+            cur_px = row.get("current_price")
+            ipo_px = row.get("ipo_price")
+            chg = row.get("price_change_pct")
+            vol = row.get("avg_volume_30d")
+            mktcap = row.get("market_cap")
+            mkt_note = row.get("market_data_note", "")
+            if cur_px is not None:
+                st.caption(
+                    f"IPO price: {_fmt_price(ipo_px)} | "
+                    f"Current: {_fmt_price(cur_px)} | "
+                    f"Change: {_fmt_pct(chg)} | "
+                    f"30d avg vol: {_fmt_volume(vol)} | "
+                    f"Mkt cap: {_fmt_market_cap(mktcap)}"
+                )
+            elif mkt_note:
+                st.caption(f"Market data: {mkt_note}")
+
         with right:
             if row["source_url"]:
                 st.link_button("Open SEC filing", row["source_url"])
@@ -228,6 +287,15 @@ def render_company_card(row: dict) -> None:
                 st.caption("SEC filing link will appear after a successful live refresh.")
             st.metric("Days to Expiration", row["days_to_expiration"])
             st.metric("Confidence", f"{confidence_score}/100")
+            # ── Feature 7: price delta metric ──────────────────────────────
+            if row.get("current_price") is not None:
+                delta_str = _fmt_pct(row.get("price_change_pct"))
+                st.metric(
+                    "Price vs IPO",
+                    _fmt_price(row.get("current_price")),
+                    delta=delta_str,
+                )
+
         if row["principal_holders"]:
             st.subheader("Principal holders parsed from filing")
             st.json(row["principal_holders"])
@@ -248,22 +316,8 @@ st.markdown(
             box-shadow: 0 18px 50px rgba(15,23,42,.18);
             margin-bottom: 1rem;
         }
-        .hero h1 {
-            margin-bottom: .35rem;
-            font-size: 2.3rem;
-        }
-        .hero p {
-            margin: 0;
-            opacity: .9;
-            max-width: 60rem;
-        }
-        .mini-card {
-            border: 1px solid rgba(148,163,184,.25);
-            border-radius: 1rem;
-            padding: 1rem;
-            background: rgba(255,255,255,.75);
-            backdrop-filter: blur(6px);
-        }
+        .hero h1 { margin-bottom: .35rem; font-size: 2.3rem; }
+        .hero p { margin: 0; opacity: .9; max-width: 60rem; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -273,7 +327,8 @@ st.markdown(
     """
     <div class="hero">
         <h1>IPO Lockup Tracker</h1>
-        <p>Demo dashboard for US IPOs that estimates when early holders become eligible to sell after the lock-up period. The app is designed for Streamlit Community Cloud and updates automatically from the `main` branch.</p>
+        <p>Demo dashboard for US IPOs that estimates when early holders become eligible to sell
+        after the lock-up period, with live SEC filing enrichment and market price context.</p>
     </div>
     """,
     unsafe_allow_html=True,
@@ -286,7 +341,7 @@ with st.sidebar:
         "Reference date",
         options=["Demo snapshot", "Today"],
         index=0,
-        help="The demo snapshot keeps multiple unlock windows visible at once. Switch to Today to use the actual current date.",
+        help="The demo snapshot keeps multiple unlock windows visible. Switch to Today to use the actual current date.",
     )
     reference_date = DEMO_REFERENCE_DATE if reference_mode == "Demo snapshot" else date.today()
     st.caption(f"Using reference date: {reference_date.isoformat()}")
@@ -295,18 +350,18 @@ with st.sidebar:
         "Discord webhook URL",
         value=secret_webhook,
         type="password",
-        help="Optional. Sends a payload when days_to_expiration == 3. You can also store this in Streamlit secrets.",
+        help="Optional. Sends a payload when days_to_expiration == 3.",
     ).strip()
     run_alerts = st.toggle("Send Discord alerts during refresh", value=False)
     refresh_clicked = st.button("Refresh from SEC now", type="primary")
     if secret_webhook:
         st.caption("Discord webhook loaded from Streamlit secrets.")
-    st.caption("For Streamlit Cloud: repo `CT14090/IPO`, branch `main`, entrypoint `app.py`.")
+    st.caption("Repo: CT14090/IPO · branch: main · entrypoint: app.py")
 
 if refresh_clicked and use_live_sec:
-    with st.spinner("Refreshing SEC data..."):
+    with st.spinner("Refreshing SEC + market data..."):
         refresh_live_data()
-    st.sidebar.success("SEC enrichment refreshed.")
+    st.sidebar.success("SEC enrichment + market data refreshed.")
 elif refresh_clicked and not use_live_sec:
     st.sidebar.warning("Enable live SEC enrichment to pull SEC filings.")
 
@@ -333,7 +388,9 @@ if alert_rows:
 else:
     st.info("No watchlist company is exactly three days from unlock on the selected reference date.")
 
-overview_tab, companies_tab, discovery_tab, deployment_tab = st.tabs(["Overview", "Companies", "Discovery", "Deployment"])
+overview_tab, companies_tab, discovery_tab, deployment_tab = st.tabs(
+    ["Overview", "Companies", "Discovery", "Deployment"]
+)
 
 with overview_tab:
     metric_cols = st.columns(5)
@@ -345,13 +402,13 @@ with overview_tab:
     st.caption(f"{watchlist_sources} company records currently have SEC filing links.")
 
     st.subheader("Unlock timeline")
-    st.caption(
-        "Each bar starts at the IPO date and ends at the estimated unlock date. The demo snapshot intentionally surfaces multiple overlapping unlock windows."
-    )
     st.altair_chart(timeline_chart(rows), use_container_width=True)
 
     if due_soon:
-        due_tickers = ", ".join(f"{row['ticker']} ({row['days_to_expiration']}d)" for row in rows if 0 <= row["days_to_expiration"] <= 7)
+        due_tickers = ", ".join(
+            f"{row['ticker']} ({row['days_to_expiration']}d)"
+            for row in rows if 0 <= row["days_to_expiration"] <= 7
+        )
         st.success(f"Due soon: {due_tickers}")
     else:
         st.success("No lockups are due within the next 7 days for the chosen reference date.")
@@ -364,10 +421,12 @@ with overview_tab:
             "IPO Date": row["ipo_date"],
             "Unlock Date": row["unlock_date"],
             "Days to Expiration": row["days_to_expiration"],
+            "IPO Price": _fmt_price(row.get("ipo_price")),
+            "Current Price": _fmt_price(row.get("current_price")),
+            "Change": _fmt_pct(row.get("price_change_pct")),
+            "30d Vol": _fmt_volume(row.get("avg_volume_30d")),
             "Confidence": f"{row.get('confidence_label', 'Seeded')} ({row.get('confidence_score', 0)}/100)",
             "Status": row["status"],
-            "Lock-up Days": row["lockup_days"],
-            "Source": row["lockup_source"],
         }
         for row in rows
     ]
@@ -375,31 +434,33 @@ with overview_tab:
 
 with companies_tab:
     st.subheader("Company detail")
-    st.caption("Each company expands into a compact card so the layout stays readable on smaller screens.")
     for row in rows:
         render_company_card(row)
 
 with discovery_tab:
     st.subheader("Recent IPO candidates from SEC")
-    st.caption("This feed surfaces recent 424B4 and F-1 filings that are not already on the watchlist. It is a discovery queue, not a fully validated IPO list.")
+    st.caption(
+        "Primary source: EFTS full-text search for '\"initial public offering\"' in 424B4/S-1/F-1 filings. "
+        "Falls back to RSS current-filings feed if EFTS is unavailable. "
+        "Secondary offerings and shelf registrations are filtered out."
+    )
     candidates = discover_recent_ipo_candidates(limit=10)
     if not candidates:
         st.info("No new candidates found right now.")
     else:
         discovery_rows = [
             {
-                "Company": candidate["company_name"],
-                "Ticker": candidate["ticker"] or "—",
-                "CIK": candidate["cik"],
-                "Form": candidate["form"],
-                "Filed": candidate["filing_date"],
-                "Confidence": candidate["confidence"],
-                "Why": candidate["reason"],
+                "Company": c["company_name"],
+                "Ticker": c["ticker"] or "—",
+                "CIK": c["cik"],
+                "Form": c["form"],
+                "Filed": c["filing_date"],
+                "Confidence": c["confidence"],
+                "Why": c["reason"],
             }
-            for candidate in candidates
+            for c in candidates
         ]
         st.dataframe(pd.DataFrame(discovery_rows), use_container_width=True, hide_index=True)
-        st.caption("Use this tab to spot newly filed IPO candidates before they appear in the lock-up watchlist.")
 
 with deployment_tab:
     st.subheader("How to deploy this app")
@@ -414,13 +475,11 @@ with deployment_tab:
         'discord_webhook_url = "https://discord.com/api/webhooks/..."\nsec_user_agent = "IPO Lockup Tracker demo you@example.com"',
         language="toml",
     )
-    st.info(
-        "Streamlit Community Cloud is free for personal, non-commercial, and educational apps, and it syncs updates directly from GitHub."
-    )
-    st.caption("If you edit the repo on `main`, the Cloud app will pick up the changes automatically after the next refresh.")
+    st.info("Streamlit Community Cloud is free for personal, non-commercial, and educational apps.")
 
 st.subheader("Demo notes")
 st.info(
-    "This starter uses real US IPO names, CIKs, and filing lookups, but it also keeps a seeded local watchlist so the dashboard remains useful even if SEC data is temporarily unavailable. "
-    "The Discord helper only sends when `days_to_expiration == 3`."
+    "This tracker uses real US IPO names, CIKs, and SEC filing lookups. "
+    "Market price data is fetched via yfinance (Yahoo Finance) on each SEC refresh. "
+    "The Discord helper only sends when days_to_expiration == 3."
 )

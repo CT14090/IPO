@@ -62,7 +62,6 @@ HOLDER_PLACEHOLDERS = {
 }
 
 # ── Fix 3 ──────────────────────────────────────────────────────────────────────
-# Keywords used when scanning post-IPO 8-K filings for lock-up amendments.
 _LOCKUP_AMENDMENT_RE = re.compile(
     r"(lock[- ]up|restricted period|lockup|early release|lock up period"
     r"|lock-up period will terminate|restricted period.*?end)",
@@ -70,7 +69,6 @@ _LOCKUP_AMENDMENT_RE = re.compile(
 )
 
 # ── Fix 2 ──────────────────────────────────────────────────────────────────────
-# Patterns that detect conditional / dual-trigger expiry language.
 _EARLY_RELEASE_RE = re.compile(
     r"(earlier of|early release|lock[- ]up period will terminate"
     r"|restricted period.*?end|price condition"
@@ -78,8 +76,6 @@ _EARLY_RELEASE_RE = re.compile(
     r"|\d+%.*?greater than the ipo price)",
     re.I,
 )
-# Two separate patterns — earnings trigger is detected when BOTH appear within
-# a 400-char window, in either order (the ALAB prospectus has trading-day before earnings).
 _EARNINGS_KEYWORD_RE = re.compile(
     r"(earnings|quarterly results|financial results)",
     re.I,
@@ -103,7 +99,6 @@ class FilingReference:
     filing_url: str
 
 
-# ── Fix 2 ──────────────────────────────────────────────────────────────────────
 @dataclass
 class LockupConditions:
     """Structured representation of potentially complex lock-up terms."""
@@ -113,8 +108,8 @@ class LockupConditions:
     early_release_description: str = ""
     has_earnings_trigger: bool = False
     early_release_pct: int | None = None
-    amendment_date: str | None = None        # set if sourced from 8-K
-    amendment_url: str | None = None         # set if sourced from 8-K
+    amendment_date: str | None = None
+    amendment_url: str | None = None
 
     def notes_summary(self) -> str:
         parts = [f"Lock-up: {self.lockup_days} days ({self.lockup_source})"]
@@ -271,13 +266,6 @@ def _extract_lockup_days_from_window(
     *,
     allow_overallotment: bool = False,
 ) -> tuple[int | None, str | None]:
-    """
-    Extract a day count from a text window.
-
-    When allow_overallotment=False (default), any match whose surrounding
-    ~200-character context contains greenshoe/overallotment language is
-    discarded to avoid the 30-day false positive.
-    """
     patterns = [
         r"period ending[^.]{0,300}?(\d{2,3})\s+days",
         r"earlier of[^)]{0,200}?(\d{2,3})\s+days",
@@ -318,15 +306,6 @@ def _has_earnings_trigger(text: str) -> bool:
 
 
 def _detect_early_release(section_text: str) -> tuple[bool, bool, int | None, str]:
-    """
-    Detect whether a lock-up section contains conditional / early-release terms.
-
-    Returns:
-        has_early_release: True if any early-exit language found
-        has_earnings_trigger: True if an earnings-date trigger is present
-        early_release_pct: percentage of shares subject to early release (or None)
-        description: short human-readable excerpt of the condition
-    """
     has_early = bool(_EARLY_RELEASE_RE.search(section_text))
     has_earnings = _has_earnings_trigger(section_text)
 
@@ -415,12 +394,6 @@ def extract_lockup_days(html_text: str) -> tuple[int, str]:
 
 # ── Fix 4 ──────────────────────────────────────────────────────────────────────
 def extract_ipo_date_from_text(html_text: str) -> str | None:
-    """
-    Extract the IPO / prospectus date from filing text.
-
-    Added: cover-page pattern "The date of this prospectus is <date>" which is
-    present on virtually every 424B4 and missed by the original implementation.
-    """
     text = _strip_html(html_text)
     patterns = [
         r"the date of this prospectus is ([A-Z][a-z]+ \d{1,2}, \d{4})",
@@ -705,12 +678,7 @@ def assess_data_confidence(
 def enrich_company(company: dict[str, Any]) -> dict[str, Any]:
     """
     Fetch the most relevant IPO filing for a company and derive an unlock
-    estimate, now including:
-      - Fix 1: greenshoe-safe lock-up day extraction
-      - Fix 2: dual-trigger / early release detection
-      - Fix 3: post-IPO 8-K amendment scanning
-      - Fix 4: cover-page IPO date parsing
-      - Fix 5: rowspan-flattened principal holder table extraction
+    estimate, including all fixes 1-5 and Feature 7 market data.
     """
     base_ipo_date = date.fromisoformat(company["ipo_date"])
 
@@ -748,6 +716,12 @@ def enrich_company(company: dict[str, Any]) -> dict[str, Any]:
             "confidence_label": "Low",
             "confidence_details": f"Matched filing metadata, but live filing parse failed: {exc}",
             "notes": f"SEC filing could not be parsed cleanly: {exc}",
+            "ipo_price": None,
+            "current_price": None,
+            "price_change_pct": None,
+            "avg_volume_30d": None,
+            "market_cap": None,
+            "market_data_note": "",
         }
 
     ipo_date = date.fromisoformat(parsed_ipo_date_str) if parsed_ipo_date_str else base_ipo_date
@@ -776,6 +750,10 @@ def enrich_company(company: dict[str, Any]) -> dict[str, Any]:
     else:
         notes += " | Principal stockholder table not extracted cleanly."
 
+    # ── Feature 7: market price + volume context ───────────────────────────
+    from .market import fetch_market_data
+    market = fetch_market_data(company.get("ticker", ""), company["ipo_date"])
+
     return {
         "filing_form": filing_ref.form,
         "filing_date": filing_ref.filing_date,
@@ -796,6 +774,12 @@ def enrich_company(company: dict[str, Any]) -> dict[str, Any]:
         "confidence_label": confidence_label,
         "confidence_details": confidence_details,
         "notes": notes,
+        "ipo_price": market["ipo_price"],
+        "current_price": market["current_price"],
+        "price_change_pct": market["price_change_pct"],
+        "avg_volume_30d": market["avg_volume_30d"],
+        "market_cap": market["market_cap"],
+        "market_data_note": market["market_data_note"],
     }
 
 
@@ -818,4 +802,10 @@ def _error_result(
         "confidence_label": "Low",
         "confidence_details": message,
         "notes": message,
+        "ipo_price": None,
+        "current_price": None,
+        "price_change_pct": None,
+        "avg_volume_30d": None,
+        "market_cap": None,
+        "market_data_note": "",
     }

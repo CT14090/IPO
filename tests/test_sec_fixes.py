@@ -19,8 +19,7 @@ class TestGreenshoeFix(unittest.TestCase):
             "<h2>Underwriting</h2>"
             "<p>The underwriters have the option to purchase up to an additional "
             "2,970,000 shares from us at the initial public offering price, less "
-            "the underwriting discount, for 30 days after the date of this "
-            "prospectus.</p>"
+            "the underwriting discount, for 30 days after the date of this prospectus.</p>"
         )
         days, source = self.extract(html)
         self.assertNotEqual(days, 30)
