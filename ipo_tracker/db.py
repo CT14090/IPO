@@ -193,6 +193,7 @@ def upsert_snapshot(
     confidence_label: str,
     confidence_details: str,
     notes: str,
+    **_extra: object,
 ) -> None:
     with get_connection() as conn:
         conn.execute(
