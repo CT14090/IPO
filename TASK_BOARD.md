@@ -15,6 +15,7 @@
 - Discovery uses EFTS as the primary path with RSS fallback and IPO-vs-secondary filtering.
 - Discovery entity resolution now falls back to SEC submissions profiles so names can populate even when the ticker index misses a CIK.
 - Structured `lockup_conditions` data is now stored in snapshots and surfaced as its own panel in the company cards.
+- Market price/volume enrichment is now wired through `ipo_tracker/market.py`, `ipo_tracker/sec.py`, `ipo_tracker/db.py`, and `app.py`.
 
 ## Needs Follow-up
 - Principal holder extraction still needs better live coverage: ALAB currently reports `Principal stockholder table not extracted cleanly` even though the rest of the parser works.
@@ -28,7 +29,6 @@
 - Add discovery tests that cover the EFTS primary path and the RSS fallback path.
 
 ## Next Up
-- Add yfinance price and volume enrichment.
 - Add confidence-based filtering and a visible `needs review` state.
 - Add Form 4 insider tracking after unlock.
 - Improve per-holder lock-up term parsing.
