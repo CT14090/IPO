@@ -59,6 +59,7 @@ def refresh_live_data() -> list[dict]:
             unlock_date=enriched["unlock_date"],
             principal_holders=enriched["principal_holders"],
             lockup_source=enriched["lockup_source"],
+            lockup_conditions=enriched.get("lockup_conditions"),
             confidence_score=enriched["confidence_score"],
             confidence_label=enriched["confidence_label"],
             confidence_details=enriched["confidence_details"],
@@ -199,6 +200,29 @@ def progress_badge(days_to_expiration: int) -> str:
     return f"{days_to_expiration} days"
 
 
+def render_lockup_conditions(conditions: dict) -> None:
+    has_values = any(value not in (None, "", [], {}) for value in conditions.values())
+    if not has_values:
+        return
+
+    with st.expander("Lock-up conditions", expanded=False):
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Early release", "Yes" if conditions.get("has_early_release") else "No")
+        col2.metric("Earnings trigger", "Yes" if conditions.get("has_earnings_trigger") else "No")
+        col3.metric(
+            "Early release pct",
+            f"{conditions['early_release_pct']}%" if conditions.get("early_release_pct") is not None else "—",
+        )
+        col4.metric(
+            "8-K amendment",
+            conditions.get("amendment_date") or "None",
+        )
+        if conditions.get("early_release_description"):
+            st.caption(conditions["early_release_description"])
+        if conditions.get("amendment_url"):
+            st.link_button("Open 8-K amendment", conditions["amendment_url"])
+
+
 def render_company_card(row: dict) -> None:
     confidence_score = row.get("confidence_score", 0)
     confidence_label = row.get("confidence_label", "Seeded")
@@ -221,6 +245,7 @@ def render_company_card(row: dict) -> None:
             st.caption(f"Data confidence: {confidence_label} ({confidence_score}/100)")
             if confidence_details:
                 st.caption(confidence_details)
+            render_lockup_conditions(row.get("lockup_conditions", {}))
         with right:
             if row["source_url"]:
                 st.link_button("Open SEC filing", row["source_url"])
