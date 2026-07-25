@@ -8,6 +8,7 @@
 - Dual-trigger / early release detection is implemented in `ipo_tracker/sec.py` and is visible in live ALAB validation.
 - Post-IPO 8-K monitoring is implemented in `ipo_tracker/sec.py` and is visible in live ALAB validation.
 - IPO date from cover-page parsing is implemented in `ipo_tracker/sec.py` and is visible in live ALAB validation.
+- Refresh-path compatibility is hardened in `ipo_tracker/db.py` so snapshot writes can ignore extra fields safely during mixed revisions.
 
 ## Implemented in `main`, Pending Live Validation
 - Rowspan-flattened principal holder parsing is in `ipo_tracker/sec.py`.
