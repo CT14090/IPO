@@ -147,6 +147,16 @@ def _pick_identity(*values: Any) -> str:
     return ""
 
 
+def _pick_display_identity(*values: Any) -> str:
+    for value in values:
+        if _is_placeholder_company_name(value):
+            continue
+        picked = _pick_identity(value)
+        if picked:
+            return picked
+    return ""
+
+
 def _resolve_company_identity(cik: int, company_index: dict[int, dict[str, str]]) -> tuple[str, str | None, str, str]:
     meta = company_index.get(cik, {})
     profile = fetch_submission_profile(cik)
@@ -240,8 +250,8 @@ def _search_efts(
             continue
         seen.add(cik)
 
-        name, ticker, exchange, source = _resolve_company_identity(cik, company_index)
-        name = _pick_identity(name, entity_name, f"CIK {cik}") or f"CIK {cik}"
+        resolved_name, ticker, exchange, source = _resolve_company_identity(cik, company_index)
+        name = _pick_display_identity(entity_name, resolved_name, src.get("company_name"), src.get("issuer_name"))
         if _is_placeholder_company_name(name):
             continue
 
@@ -322,14 +332,15 @@ def parse_discovery_candidates(
         if cik is None or cik in watched_ciks or cik in seen:
             continue
 
-        name, ticker, exchange, source = _resolve_company_identity(cik, company_index)
-        fallback_name = _pick_identity(
+        resolved_name, ticker, exchange, source = _resolve_company_identity(cik, company_index)
+        fallback_name = _pick_display_identity(
             title.replace(f"{form} -", "").strip(),
             title,
             summary,
+            resolved_name,
             f"CIK {cik}",
         )
-        name = _pick_identity(name, fallback_name, f"CIK {cik}") or f"CIK {cik}"
+        name = fallback_name or _pick_display_identity(resolved_name, title, summary)
         if _is_placeholder_company_name(name):
             continue
 
