@@ -602,6 +602,21 @@ def _table_score(table: pd.DataFrame) -> int:
     return score
 
 
+def _table_has_real_numeric_values(table: pd.DataFrame) -> bool:
+    for cell in table.fillna("").astype(str).to_numpy().flatten():
+        text = _clean_cell_text(cell).replace(",", "")
+        if not text:
+            continue
+        if not re.fullmatch(r"\d+(?:\.\d+)?", text):
+            continue
+        try:
+            if float(text) > 1000:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
 # ── Fix 5 ──────────────────────────────────────────────────────────────────────
 def _flatten_rowspans(html_fragment: str) -> str:
     """
@@ -703,6 +718,8 @@ def extract_principal_holders(html_text: str) -> list[dict[str, Any]]:
     best_records: list[dict[str, Any]] = []
     best_score = -1
     for table in tables:
+        if not _table_has_real_numeric_values(table):
+            continue
         extracted_rows: list[dict[str, Any]] = []
         for _, row in table.head(12).iterrows():
             record = _canonicalize_holder_row(row)
