@@ -15,7 +15,6 @@
 - A dedicated `Diagnostics` tab now exposes row-level JSON export and exact computed values for QA without screenshots.
 
 ## Implemented in `main`, Pending Live Validation
-- Rowspan-flattened principal holder parsing is in `ipo_tracker/sec.py`, including the spacer-cell ALAB path and the table-of-contents guard.
 - Automated IPO discovery is in `ipo_tracker/discovery.py` and shown in the Streamlit `Discovery` tab.
 - Discovery uses EFTS as the primary path with RSS fallback and IPO-vs-secondary filtering.
 - Discovery entity resolution now prefers real source/profile names and skips nameless candidates instead of emitting `CIK ####` rows.
@@ -24,9 +23,13 @@
 - Market price/volume enrichment is now wired through `ipo_tracker/market.py`, `ipo_tracker/sec.py`, `ipo_tracker/db.py`, and `app.py`.
 
 ## Needs Follow-up
-- Live validation is still needed for the refreshed Discovery tab and the ALAB holder table after the latest fixes.
+- The ALAB diagnostics JSON still shows the principal holder parser reading the table of contents instead of the stockholder table.
+- The same diagnostics JSON still shows `early_release_pct` as `null` and the principal-holder score inflated to 100 because the parser accepted page-number rows.
+- Live validation is still needed for the refreshed Discovery tab after the latest fixes, but the main blocking issue is the ALAB parser shape.
 
 ## Needs Regression Tests
+- Add a regression test that rejects table-of-contents rows when extracting principal holders.
+- Add a regression test that captures `early_release_pct` from the full lock-up section when the percentage appears later in the section.
 - Add parser tests for greenshoe disambiguation.
 - Add parser tests for early-release and earnings-trigger detection.
 - Add parser tests for 8-K amendment detection.
