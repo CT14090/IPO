@@ -12,6 +12,7 @@
 - Regression coverage now exists in `tests/test_sec.py` for the signed market-change helper, the long-window early-release percentage, and the spacer-table principal holder parser.
 - Regression coverage now exists in `tests/test_discovery.py` for source-name fallback and nameless-candidate skipping.
 - The refreshed Streamlit screenshot confirms the market `% from IPO` column now uses the correct signed arithmetic.
+- A dedicated `Diagnostics` tab now exposes row-level JSON export and exact computed values for QA without screenshots.
 
 ## Implemented in `main`, Pending Live Validation
 - Rowspan-flattened principal holder parsing is in `ipo_tracker/sec.py`, including the spacer-cell ALAB path and the table-of-contents guard.
