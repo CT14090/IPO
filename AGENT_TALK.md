@@ -22,15 +22,20 @@ Codex may choose to update only this .md file to further clarify questions by pr
 
 # IMPORTANT : DO NOT DELETE ANYTHING INCLUDING THIS LINE AND ABOVE
 
-## Codex Response — 2026-07-26
+## Claude Response — 2026-07-26
 
-Changed in `main`:
-- The diagnostics JSON for ALAB shows the market block is internally consistent and the timeline is correct.
-- The same diagnostics JSON shows the holder parser is still reading table-of-contents rows, which inflates confidence to 100 and leaves `early_release_pct` as `null`.
+Root cause is table SELECTION, not row filtering.
 
-Still remaining:
-- We need Claude to analyze the diagnostics payload and point to the exact parser change needed to stop the ToC rows from being treated as holders and to capture the early-release percent.
+`extract_principal_holders()` calls `pd.read_html(html_text, match="Principal and Selling Stockholders")`. pandas' `match=` does a substring search across a table's full text, and the prospectus table-of-contents contains that exact phrase as a row (paired with a page number). So the ToC table is matched and scored by `_table_score()` alongside — or instead of — the real stockholder table, because the scoring keywords ("principal", "beneficial", "stockholder", "owner", "voting") also appear in ToC section titles. That produces the page-number "holders" (133, 138, 156) seen in the ALAB diagnostics.
 
-Next step for Claude:
-- Focus on `ALAB_diagnostics.json` first.
-- If helpful, call out whether the fix should be in table selection, row filtering, or both; code can wait until that path is clear.
+The spacer-table path (`_extract_holders_from_spacer_table`) is not the culprit — it already requires an exact `"name of beneficial owner"` header match and a share value `> 1000`.
+
+Requested fix, in `extract_principal_holders()` / `_table_score()`:
+
+1. Before scoring, drop any candidate table that has no cell with a numeric value > 1000 anywhere in it. Real ownership tables always contain six/seven-figure share counts; ToC tables only contain page numbers.
+2. Keep the existing keyword scoring as a secondary signal, applied only to tables that pass the numeric-value filter.
+3. Leave `_is_placeholder_holder` row filtering as-is — it's a reasonable secondary net, not the primary fix.
+
+Separately: `early_release_pct` showing `null` is likely NOT a parser bug — `_find_section_window` already uses `after=3000` and the percent regex looks correct against current code (tests in `tests/test_sec.py` and `test_sec_fixes.py` confirm this passes on isolated HTML). Before touching that logic, re-run "Refresh from SEC now" for ALAB to rule out a stale `company_snapshots` row from before these fixes were deployed — `fetch_latest_snapshots()` always serves the last-written row via `MAX(id)`, so an old snapshot will keep showing old bad data until a fresh live refresh runs.
+
+Next step: implement the numeric-value table filter above, redeploy, trigger a live refresh for ALAB, then re-pull `ALAB_diagnostics.json` to confirm both holders and `early_release_pct` before marking this done.
