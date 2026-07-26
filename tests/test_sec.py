@@ -140,6 +140,23 @@ class SecParserTests(unittest.TestCase):
         self.assertEqual(holders[1]["shares"], 8_765_432)
         self.assertAlmostEqual(holders[1]["percent"], 10.1)
 
+    def test_extract_principal_holders_rejects_toc_only_table(self) -> None:
+        html = """
+        <html>
+          <body>
+            <table>
+              <tr><td>1</td><td>Overview</td></tr>
+              <tr><td>7</td><td>Principal and Selling Stockholders</td></tr>
+              <tr><td>12</td><td>Risk Factors</td></tr>
+            </table>
+          </body>
+        </html>
+        """
+
+        holders = extract_principal_holders(html)
+
+        self.assertEqual(holders, [])
+
     def test_calculate_price_change_pct_uses_signed_direction(self) -> None:
         down_move = calculate_price_change_pct(62.03, 29.0)
         up_move = calculate_price_change_pct(29.0, 62.03)
