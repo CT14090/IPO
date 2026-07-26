@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
 from datetime import date, timedelta
+from typing import Any
 
 import altair as alt
 import pandas as pd
@@ -257,6 +259,57 @@ def _format_percent(value) -> str:
         return "—"
 
 
+def _diagnostics_label(row: dict) -> str:
+    return f"{row.get('ticker', '—')} | {row.get('company_name', 'Unknown')} | CIK {row.get('cik', '—')}"
+
+
+def _diagnostics_payload(row: dict, rows: list[dict], reference_date: date, summary: dict[str, int]) -> dict[str, Any]:
+    return {
+        "generated_at": date.today().isoformat(),
+        "reference_date": reference_date.isoformat(),
+        "dashboard_summary": summary,
+        "company": {
+            "company_id": row.get("company_id"),
+            "company_name": row.get("company_name"),
+            "ticker": row.get("ticker"),
+            "cik": row.get("cik"),
+            "theme": row.get("theme"),
+        },
+        "timeline": {
+            "ipo_date": row.get("ipo_date"),
+            "unlock_date": row.get("unlock_date"),
+            "days_to_expiration": row.get("days_to_expiration"),
+            "days_since_ipo": row.get("days_since_ipo"),
+            "unlock_progress": row.get("unlock_progress"),
+            "status": row.get("status"),
+        },
+        "filing": {
+            "filing_form": row.get("filing_form"),
+            "filing_date": row.get("filing_date"),
+            "source_url": row.get("source_url"),
+            "lockup_days": row.get("lockup_days"),
+            "lockup_source": row.get("lockup_source"),
+            "lockup_conditions": row.get("lockup_conditions", {}),
+            "principal_holders": row.get("principal_holders", []),
+            "notes": row.get("notes"),
+        },
+        "market": {
+            "ipo_price": row.get("ipo_price"),
+            "current_price": row.get("current_price"),
+            "price_change_pct": _market_price_change_pct(row),
+            "avg_volume_30d": row.get("avg_volume_30d"),
+            "market_cap": row.get("market_cap"),
+            "market_data_note": row.get("market_data_note", ""),
+        },
+        "confidence": {
+            "score": row.get("confidence_score", 0),
+            "label": row.get("confidence_label", "Seeded"),
+            "details": row.get("confidence_details", ""),
+        },
+        "selected_row_index": next((index for index, candidate in enumerate(rows) if candidate.get("company_id") == row.get("company_id")), None),
+    }
+
+
 def render_lockup_conditions(conditions: dict) -> None:
     has_values = any(value not in (None, "", [], {}) for value in conditions.values())
     if not has_values:
@@ -334,6 +387,32 @@ def render_company_card(row: dict) -> None:
         if row["principal_holders"]:
             st.subheader("Principal holders parsed from filing")
             st.json(row["principal_holders"])
+
+
+def render_diagnostics_tab(rows: list[dict], reference_date: date, summary: dict[str, int]) -> None:
+    st.subheader("Diagnostics")
+    st.caption("Inspect the exact values behind the dashboard and download them as JSON for debugging or QA.")
+    if not rows:
+        st.info("No dashboard rows are available yet.")
+        return
+
+    options = {_diagnostics_label(row): row for row in rows}
+    selected_label = st.selectbox("Company to inspect", list(options.keys()), index=0)
+    selected_row = options[selected_label]
+    payload = _diagnostics_payload(selected_row, rows, reference_date, summary)
+
+    metric_cols = st.columns(3)
+    metric_cols[0].metric("Ticker", selected_row.get("ticker", "—"))
+    metric_cols[1].metric("Days to Expiration", selected_row.get("days_to_expiration", "—"))
+    metric_cols[2].metric("Confidence", f"{selected_row.get('confidence_score', 0)}/100")
+
+    st.download_button(
+        "Download diagnostics JSON",
+        data=json.dumps(payload, indent=2, default=str),
+        file_name=f"{selected_row.get('ticker', 'diagnostics')}_diagnostics.json",
+        mime="application/json",
+    )
+    st.json(payload)
 
 
 initialize_database()
@@ -426,6 +505,13 @@ due_soon = sum(1 for row in rows if 0 <= row["days_to_expiration"] <= 7)
 expired = sum(1 for row in rows if row["days_to_expiration"] < 0)
 watchlist_sources = len({row["source_url"] for row in rows if row["source_url"]})
 avg_confidence = round(sum(row.get("confidence_score", 0) for row in rows) / max(1, total))
+summary = {
+    "total": total,
+    "upcoming": upcoming,
+    "due_soon": due_soon,
+    "expired": expired,
+    "avg_confidence": avg_confidence,
+}
 
 alert_rows = [row for row in rows if row["days_to_expiration"] == DEFAULT_ALERT_DAYS]
 if alert_rows:
@@ -436,7 +522,7 @@ if alert_rows:
 else:
     st.info("No watchlist company is exactly three days from unlock on the selected reference date.")
 
-overview_tab, companies_tab, discovery_tab, deployment_tab = st.tabs(["Overview", "Companies", "Discovery", "Deployment"])
+overview_tab, companies_tab, discovery_tab, diagnostics_tab, deployment_tab = st.tabs(["Overview", "Companies", "Discovery", "Diagnostics", "Deployment"])
 
 with overview_tab:
     metric_cols = st.columns(5)
@@ -509,6 +595,9 @@ with discovery_tab:
         st.dataframe(pd.DataFrame(discovery_rows), use_container_width=True, hide_index=True)
         st.caption("Use this tab to spot newly filed IPO candidates before they appear in the lock-up watchlist.")
 
+with diagnostics_tab:
+    render_diagnostics_tab(rows, reference_date, summary)
+
 with deployment_tab:
     st.subheader("How to deploy this app")
     st.markdown(
@@ -518,17 +607,3 @@ with deployment_tab:
         3. Add secrets in Streamlit Cloud for the Discord webhook and optional SEC user agent.
         """
     )
-    st.code(
-        'discord_webhook_url = "https://discord.com/api/webhooks/..."\nsec_user_agent = "IPO Lockup Tracker demo you@example.com"',
-        language="toml",
-    )
-    st.info(
-        "Streamlit Community Cloud is free for personal, non-commercial, and educational apps, and it syncs updates directly from GitHub."
-    )
-    st.caption("If you edit the repo on `main`, the Cloud app will pick up the changes automatically after the next refresh.")
-
-st.subheader("Demo notes")
-st.info(
-    "This starter uses real US IPO names, CIKs, and filing lookups, but it also keeps a seeded local watchlist so the dashboard remains useful even if SEC data is temporarily unavailable. "
-    "The Discord helper only sends when `days_to_expiration == 3`."
-)
