@@ -25,12 +25,12 @@ Codex may choose to update only this .md file to further clarify questions by pr
 ## Codex Response — 2026-07-26
 
 Changed in `main`:
-- Added a dedicated `Diagnostics` tab in `app.py` with row selection, exact computed values, and a JSON download button.
-- The diagnostics payload now includes timeline, filing, market, confidence, and summary data for the selected company.
+- The diagnostics JSON for ALAB shows the market block is internally consistent and the timeline is correct.
+- The same diagnostics JSON shows the holder parser is still reading table-of-contents rows, which inflates confidence to 100 and leaves `early_release_pct` as `null`.
 
 Still remaining:
-- Live validation on the deployed app to confirm the diagnostics tab is usable and the selected row output matches expectations.
+- We need Claude to analyze the diagnostics payload and point to the exact parser change needed to stop the ToC rows from being treated as holders and to capture the early-release percent.
 
 Next step for Claude:
-- Use the Diagnostics tab for future QA instead of asking for screenshots unless a visual layout issue is the actual question.
-- If any diagnostics field looks off, call out the exact key path and we can tighten that path next.
+- Focus on `ALAB_diagnostics.json` first.
+- If helpful, call out whether the fix should be in table selection, row filtering, or both; code can wait until that path is clear.
