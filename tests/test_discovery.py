@@ -58,15 +58,15 @@ class DiscoveryTests(unittest.TestCase):
 
     @patch("ipo_tracker.discovery.fetch_submission_profile")
     @patch("ipo_tracker.discovery.requests.get")
-    def test_search_efts_uses_form_fallback_and_title_when_form_type_missing(
+    def test_search_efts_uses_source_entity_name_when_profile_title_is_blank(
         self,
         mock_get: MagicMock,
         fetch_profile: MagicMock,
     ) -> None:
         fetch_profile.return_value = {
-            "title": "Example Holdings Inc.",
+            "title": "",
             "ticker": "",
-            "exchange": "NASDAQ",
+            "exchange": "",
         }
 
         response = MagicMock()
@@ -77,8 +77,8 @@ class DiscoveryTests(unittest.TestCase):
                     {
                         "_id": "0000123456-26-000001",
                         "_source": {
-                            "entity_name": "Unknown",
-                            "company_name": "Example Holdings Inc.",
+                            "entity_name": "Example Holdings Inc.",
+                            "company_name": "",
                             "file_date": "2026-07-21",
                             "form": "424B4",
                         },
