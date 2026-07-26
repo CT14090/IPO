@@ -4,7 +4,7 @@ import unittest
 
 from ipo_tracker.config import DEFAULT_LOCKUP_DAYS
 from ipo_tracker.market import calculate_price_change_pct
-from ipo_tracker.sec import assess_data_confidence, extract_lockup_days, extract_principal_holders
+from ipo_tracker.sec import assess_data_confidence, extract_lockup_conditions, extract_lockup_days, extract_principal_holders
 
 
 class SecParserTests(unittest.TestCase):
@@ -28,6 +28,25 @@ class SecParserTests(unittest.TestCase):
 
         self.assertEqual(days, DEFAULT_LOCKUP_DAYS)
         self.assertIn("Defaulted to 180 days", source)
+
+    def test_extract_lockup_conditions_finds_early_release_pct_beyond_short_window(self) -> None:
+        filler = "x" * 2400
+        html = f"""
+        <html>
+          <body>
+            <h2>Lock-Up Agreements</h2>
+            <p>The lock-up period will terminate on the earlier of (i) the second trading day after the date that we publicly announce earnings or (ii) 180 days after the date of this prospectus.</p>
+            <p>{filler}</p>
+            <p>In addition, up to 20% of eligible securities may be released.</p>
+          </body>
+        </html>
+        """
+
+        conditions = extract_lockup_conditions(html)
+
+        self.assertTrue(conditions.has_early_release)
+        self.assertEqual(conditions.early_release_pct, 20)
+        self.assertIn("Earnings-linked trigger", conditions.notes_summary())
 
     def test_extract_principal_holders_cleans_headers_and_numeric_values(self) -> None:
         html = """
@@ -70,11 +89,15 @@ class SecParserTests(unittest.TestCase):
         self.assertEqual(holders[1]["shares"], 8_765_432)
         self.assertAlmostEqual(holders[1]["percent"], 10.1)
 
-    def test_extract_principal_holders_handles_spacer_cells(self) -> None:
+    def test_extract_principal_holders_handles_spacer_cells_and_ignores_toc(self) -> None:
         html = """
         <html>
           <body>
-            <h2>Principal and Selling Stockholders</h2>
+            <table>
+              <tr><td>1</td><td>Overview</td></tr>
+              <tr><td>7</td><td>Principal and Selling Stockholders</td></tr>
+              <tr><td>12</td><td>Risk Factors</td></tr>
+            </table>
             <table>
               <tr>
                 <th>Name of Beneficial Owner</th>
