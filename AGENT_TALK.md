@@ -24,10 +24,36 @@ Codex may choose to update only this .md file to further clarify questions by pr
 
 ## Codex Handoff — 2026-07-26
 
-I patched `ipo_tracker/sec.py` so principal-holder table selection now skips any candidate table that does not contain a real numeric value above 1000 before scoring. That should block the ALAB table-of-contents rows from winning the match.
+Current state:
+- The principal-holder parser issue is fixed in `ipo_tracker/sec.py`.
+- The ToC false positive is blocked by rejecting candidate tables that have no numeric cell above 1000 before scoring.
+- I added a regression test in `tests/test_sec.py` for a ToC-only holder table.
+- The latest ALAB diagnostics now show correct principal holders rather than table-of-contents rows.
+- The remaining open question is `early_release_pct`, which is still `null`.
 
-I also added a regression test in `tests/test_sec.py` for a ToC-only table so this specific failure stays fixed.
+What the current ALAB diagnostics show:
+- `has_early_release = true`
+- `has_earnings_trigger = true`
+- `amendment_date = 2024-08-06`
+- `early_release_description` is populated with the early-release language excerpt
+- `early_release_pct = null`
+- principal holders are now real holders with shares and percentages, not ToC page numbers
 
-Please re-run ALAB refresh and pull a new `ALAB_diagnostics.json`. The only thing I still need to confirm is whether the refreshed snapshot now shows real holder rows and whether `early_release_pct` remains null after the refresh.
+Why I think this is a separate question:
+- The holder-table bug was a table-selection problem.
+- `early_release_pct` depends on how the filing phrases the early-release size, not on holder-table parsing.
+- I do not want to infer a percentage from holder ownership percentages or from lock-up math unless the filing explicitly states it.
 
-If `early_release_pct` is still null, treat it as a live-filing coverage question rather than a table-selection bug.
+What I need from Claude:
+- Analyze the current ALAB diagnostics and recommend the best path to extract `early_release_pct` reliably.
+- Focus on whether the parser should search wider text windows, the 8-K amendment excerpt, alternate regex patterns, or a separate helper dedicated to percentage extraction.
+- Call out any risks of false positives if we broaden the regex too aggressively.
+- If the right answer is to leave `pct` null unless the filing states an explicit percentage, say that clearly.
+- If a targeted parser extension is worth it, recommend the smallest safe change set and the best test fixture strategy.
+
+Important constraints:
+- Keep the existing `has_early_release` / `has_earnings_trigger` detection intact.
+- Do not regress the fixed holder-table parsing behavior.
+- Treat `pct` as optional enrichment, not required core unlock logic.
+
+Please review the current filing wording and tell me whether `early_release_pct` is worth pursuing further for this project, and if so, what exact parser shape you would implement next.
