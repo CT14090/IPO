@@ -114,12 +114,11 @@ def fetch_submission_profile(cik: int) -> dict[str, str]:
     payload = response.json()
     tickers = [str(item).strip() for item in payload.get("tickers", []) if str(item).strip()]
     exchanges = [str(item).strip() for item in payload.get("exchanges", []) if str(item).strip()]
-    title = str(
-        payload.get("name")
-        or payload.get("entityName")
-        or payload.get("companyName")
-        or ""
-    ).strip()
+    title = _pick_identity(
+        payload.get("name"),
+        payload.get("entityName"),
+        payload.get("companyName"),
+    )
     return {
         "ticker": tickers[0] if tickers else "",
         "title": title,
@@ -132,6 +131,13 @@ def _is_missing_identity(value: Any) -> bool:
         return True
     text = str(value).strip().lower()
     return text in _MISSING_IDENTITY_VALUES
+
+
+def _is_placeholder_company_name(value: Any) -> bool:
+    if _is_missing_identity(value):
+        return True
+    text = str(value).strip().lower()
+    return bool(re.fullmatch(r"cik\s+\d+", text))
 
 
 def _pick_identity(*values: Any) -> str:
@@ -236,6 +242,9 @@ def _search_efts(
 
         name, ticker, exchange, source = _resolve_company_identity(cik, company_index)
         name = _pick_identity(name, entity_name, f"CIK {cik}") or f"CIK {cik}"
+        if _is_placeholder_company_name(name):
+            continue
+
         ticker = _pick_identity(ticker, src.get("ticker"), src.get("symbol")) or None
         exchange = _pick_identity(exchange)
         confidence, reason = _ipo_confidence(entity_name, "", bool(ticker))
@@ -321,6 +330,8 @@ def parse_discovery_candidates(
             f"CIK {cik}",
         )
         name = _pick_identity(name, fallback_name, f"CIK {cik}") or f"CIK {cik}"
+        if _is_placeholder_company_name(name):
+            continue
 
         confidence, reason = _ipo_confidence(title, summary, bool(ticker))
         if confidence == "Low":
