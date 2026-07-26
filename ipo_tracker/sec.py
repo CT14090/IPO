@@ -249,7 +249,7 @@ def _find_section_window(
     text: str,
     heading: str,
     before: int = 200,
-    after: int = 2000,
+    after: int = 3000,
 ) -> str | None:
     lowered = text.lower()
     index = lowered.find(heading)
@@ -368,6 +368,8 @@ def _parse_spacer_table_row(tr: Any) -> dict[str, Any] | None:
     percent = _parse_holder_measure("percent", value_cells[2]) if len(value_cells) > 2 else None
     if shares is None and percent is None:
         return None
+    if isinstance(shares, int) and shares <= 1000:
+        return None
 
     return {"holder": holder, "shares": shares, "percent": percent}
 
@@ -389,10 +391,27 @@ def _extract_holders_from_spacer_table(html_text: str) -> list[dict[str, Any]]:
 
     target_table = None
     for table in root.xpath(".//table"):
-        header_text = _clean_cell_text(table.text_content()).lower()
-        if "beneficial owner" in header_text or "principal stockholder" in header_text or "principal and selling stockholders" in header_text:
-            target_table = table
-            break
+        header_cells = table.xpath(".//th|.//td")
+        has_name_header = any(
+            _clean_cell_text(cell.text_content()).lower() == "name of beneficial owner"
+            for cell in header_cells
+        )
+        if not has_name_header:
+            continue
+
+        large_numbers = [
+            int(text)
+            for text in (
+                _clean_cell_text(cell.text_content()).replace(",", "")
+                for cell in table.xpath(".//td")
+            )
+            if text.isdigit() and int(text) > 1000
+        ]
+        if not large_numbers:
+            continue
+
+        target_table = table
+        break
     if target_table is None:
         return []
 
@@ -758,143 +777,117 @@ def assess_data_confidence(
         details.append("Unlock date cross-checked against post-IPO 8-K amendment")
 
     if has_early_release:
+        score = min(100, score + 5)
         details.append("Early release / dual-trigger clause detected — actual unlock may differ")
 
-    final_score = min(100, score)
-    return final_score, _confidence_label(final_score), "; ".join(details)
+    score = min(100, score)
+    return score, _confidence_label(score), "; ".join(details)
 
 
+# ── Convenience enrichment helper ─────────────────────────────────────────────
 def enrich_company(company: dict[str, Any]) -> dict[str, Any]:
     """
-    Fetch the most relevant IPO filing for a company and derive an unlock
-    estimate, including all fixes 1-5 and Feature 7 market data.
+    Fetch and compute all live SEC-derived fields for one watchlist company.
+
+    Returns a dict with keys consumed by the DB snapshot and Streamlit UI.
     """
-    base_ipo_date = date.fromisoformat(company["ipo_date"])
+    from .market import fetch_market_data  # local import to avoid circular dependency
 
-    try:
-        filing_ref = find_latest_ipo_filing(company["cik"])
-    except requests.RequestException as exc:
-        unlock_date = base_ipo_date + timedelta(days=company["lockup_days"])
-        return _error_result(company, unlock_date, f"SEC enrichment failed: {exc}")
+    cik = company["cik"]
+    ipo_date = company["ipo_date"]
 
-    if filing_ref is None:
-        unlock_date = base_ipo_date + timedelta(days=company["lockup_days"])
-        return _error_result(
-            company, unlock_date,
-            "No IPO-related filing found in recent SEC submissions.",
-            filing_ref=None,
-        )
+    filing_ref = find_latest_ipo_filing(cik)
+    source_url = filing_ref.filing_url if filing_ref else None
+    filing_form = filing_ref.form if filing_ref else None
+    filing_date = filing_ref.filing_date if filing_ref else None
 
-    try:
-        html_text = fetch_text(filing_ref.filing_url)
-        lockup_cond = extract_lockup_conditions(html_text)
-        parsed_ipo_date_str = extract_ipo_date_from_text(html_text)
-        principal_holders = extract_principal_holders(html_text)
-    except (ValueError, TypeError, KeyError, requests.RequestException) as exc:
-        unlock_date = base_ipo_date + timedelta(days=company["lockup_days"])
-        return {
-            "filing_form": filing_ref.form,
-            "filing_date": filing_ref.filing_date,
-            "source_url": filing_ref.filing_url,
-            "lockup_days": company["lockup_days"],
-            "unlock_date": unlock_date.isoformat(),
-            "principal_holders": [],
-            "lockup_source": "Seeded watchlist only",
-            "lockup_conditions": None,
-            "confidence_score": 20,
-            "confidence_label": "Low",
-            "confidence_details": f"Matched filing metadata, but live filing parse failed: {exc}",
-            "notes": f"SEC filing could not be parsed cleanly: {exc}",
-            "ipo_price": None,
-            "current_price": None,
-            "price_change_pct": None,
-            "avg_volume_30d": None,
-            "market_cap": None,
-            "market_data_note": "",
-        }
+    # Load the filing HTML if we found a live SEC filing
+    html_text = ""
+    if source_url:
+        try:
+            html_text = fetch_text(source_url)
+        except requests.RequestException:
+            html_text = ""
 
-    ipo_date = date.fromisoformat(parsed_ipo_date_str) if parsed_ipo_date_str else base_ipo_date
-    unlock_date = ipo_date + timedelta(days=lockup_cond.lockup_days)
+    lockup_conditions = extract_lockup_conditions(html_text) if html_text else LockupConditions(DEFAULT_LOCKUP_DAYS, "No filing text available")
+    principal_holders = extract_principal_holders(html_text) if html_text else []
 
-    amend_date, amend_url, amend_excerpt = find_lockup_amendment_8k(
-        company["cik"], ipo_date
-    )
-    if amend_date:
-        lockup_cond.amendment_date = amend_date
-        lockup_cond.amendment_url = amend_url
+    # Prefer the IPO date parsed from the filing text when present.
+    parsed_ipo_date = extract_ipo_date_from_text(html_text) if html_text else None
+    if not parsed_ipo_date:
+        parsed_ipo_date = ipo_date
+
+    # Optional post-IPO 8-K amendment check (for lock-up resets / early release)
+    amendment_date, amendment_url, amendment_excerpt = (None, None, None)
+    if parsed_ipo_date and cik:
+        try:
+            amendment_date, amendment_url, amendment_excerpt = find_lockup_amendment_8k(
+                cik=cik,
+                ipo_date=date.fromisoformat(parsed_ipo_date),
+            )
+        except Exception:
+            amendment_date, amendment_url, amendment_excerpt = None, None, None
+
+    if amendment_date:
+        lockup_conditions.amendment_date = amendment_date
+        lockup_conditions.amendment_url = amendment_url
+        if amendment_excerpt:
+            if lockup_conditions.early_release_description:
+                lockup_conditions.early_release_description = (
+                    f"{lockup_conditions.early_release_description} | {amendment_excerpt}"
+                )
+            else:
+                lockup_conditions.early_release_description = amendment_excerpt
+
+    if lockup_conditions.lockup_days <= 0:
+        lockup_conditions.lockup_days = DEFAULT_LOCKUP_DAYS
+
+    unlock_date = (date.fromisoformat(parsed_ipo_date) + timedelta(days=lockup_conditions.lockup_days)).isoformat()
+
+    market = fetch_market_data(company.get("ticker", ""), parsed_ipo_date)
+    price_change_pct = market.get("price_change_pct")
 
     confidence_score, confidence_label, confidence_details = assess_data_confidence(
-        filing_form=filing_ref.form,
-        lockup_source=lockup_cond.lockup_source,
+        filing_form=filing_form,
+        lockup_source=lockup_conditions.lockup_source,
         principal_holders=principal_holders,
-        parsed_ipo_date=parsed_ipo_date_str,
-        source_url=filing_ref.filing_url,
-        has_early_release=lockup_cond.has_early_release,
-        has_8k_amendment=amend_date is not None,
+        parsed_ipo_date=parsed_ipo_date,
+        source_url=source_url,
+        has_early_release=lockup_conditions.has_early_release,
+        has_8k_amendment=bool(amendment_date),
     )
 
-    notes = lockup_cond.notes_summary()
-    if principal_holders:
-        notes += f" | Extracted {len(principal_holders)} holder rows."
-    else:
-        notes += " | Principal stockholder table not extracted cleanly."
-
-    # ── Feature 7: market price + volume context ───────────────────────────
-    from .market import fetch_market_data
-    market = fetch_market_data(company.get("ticker", ""), company["ipo_date"])
+    notes = lockup_conditions.notes_summary()
+    if confidence_details:
+        notes = f"{notes} | {confidence_details}"
 
     return {
-        "filing_form": filing_ref.form,
-        "filing_date": filing_ref.filing_date,
-        "source_url": filing_ref.filing_url,
-        "lockup_days": lockup_cond.lockup_days,
-        "unlock_date": unlock_date.isoformat(),
+        "filing_form": filing_form,
+        "filing_date": filing_date,
+        "source_url": source_url,
+        "lockup_days": lockup_conditions.lockup_days,
+        "unlock_date": unlock_date,
         "principal_holders": principal_holders,
-        "lockup_source": lockup_cond.lockup_source,
+        "lockup_source": lockup_conditions.lockup_source,
         "lockup_conditions": {
-            "has_early_release": lockup_cond.has_early_release,
-            "has_earnings_trigger": lockup_cond.has_earnings_trigger,
-            "early_release_pct": lockup_cond.early_release_pct,
-            "early_release_description": lockup_cond.early_release_description,
-            "amendment_date": lockup_cond.amendment_date,
-            "amendment_url": lockup_cond.amendment_url,
+            "lockup_days": lockup_conditions.lockup_days,
+            "lockup_source": lockup_conditions.lockup_source,
+            "has_early_release": lockup_conditions.has_early_release,
+            "early_release_description": lockup_conditions.early_release_description,
+            "has_earnings_trigger": lockup_conditions.has_earnings_trigger,
+            "early_release_pct": lockup_conditions.early_release_pct,
+            "amendment_date": lockup_conditions.amendment_date,
+            "amendment_url": lockup_conditions.amendment_url,
         },
+        "ipo_price": market.get("ipo_price"),
+        "current_price": market.get("current_price"),
+        "price_change_pct": price_change_pct,
+        "avg_volume_30d": market.get("avg_volume_30d"),
+        "market_cap": market.get("market_cap"),
+        "market_data_note": market.get("market_data_note", ""),
+        "parsed_ipo_date": parsed_ipo_date,
         "confidence_score": confidence_score,
         "confidence_label": confidence_label,
         "confidence_details": confidence_details,
         "notes": notes,
-        "ipo_price": market["ipo_price"],
-        "current_price": market["current_price"],
-        "price_change_pct": market["price_change_pct"],
-        "avg_volume_30d": market["avg_volume_30d"],
-        "market_cap": market["market_cap"],
-        "market_data_note": market["market_data_note"],
-    }
-
-
-def _error_result(
-    company: dict[str, Any],
-    unlock_date: date,
-    message: str,
-    filing_ref: FilingReference | None = None,
-) -> dict[str, Any]:
-    return {
-        "filing_form": filing_ref.form if filing_ref else None,
-        "filing_date": filing_ref.filing_date if filing_ref else None,
-        "source_url": filing_ref.filing_url if filing_ref else None,
-        "lockup_days": company["lockup_days"],
-        "unlock_date": unlock_date.isoformat(),
-        "principal_holders": [],
-        "lockup_source": "Seeded watchlist only",
-        "lockup_conditions": None,
-        "confidence_score": 0,
-        "confidence_label": "Low",
-        "confidence_details": message,
-        "notes": message,
-        "ipo_price": None,
-        "current_price": None,
-        "price_change_pct": None,
-        "avg_volume_30d": None,
-        "market_cap": None,
-        "market_data_note": "",
     }
