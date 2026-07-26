@@ -9,20 +9,21 @@
 - Post-IPO 8-K monitoring is implemented in `ipo_tracker/sec.py` and is visible in live ALAB validation.
 - IPO date from cover-page parsing is implemented in `ipo_tracker/sec.py` and is visible in live ALAB validation.
 - Refresh-path compatibility is hardened in `ipo_tracker/db.py` so snapshot writes can ignore extra fields safely during mixed revisions.
-- Regression coverage now exists in `tests/test_sec.py` for the signed market-change helper and the spacer-table principal holder parser.
+- Regression coverage now exists in `tests/test_sec.py` for the signed market-change helper, the long-window early-release percentage, and the spacer-table principal holder parser.
+- Regression coverage now exists in `tests/test_discovery.py` for source-name fallback and nameless-candidate skipping.
 - The refreshed Streamlit screenshot confirms the market `% from IPO` column now uses the correct signed arithmetic.
 
 ## Implemented in `main`, Pending Live Validation
-- Rowspan-flattened principal holder parsing is in `ipo_tracker/sec.py`, including the spacer-cell ALAB path.
+- Rowspan-flattened principal holder parsing is in `ipo_tracker/sec.py`, including the spacer-cell ALAB path and the table-of-contents guard.
 - Automated IPO discovery is in `ipo_tracker/discovery.py` and shown in the Streamlit `Discovery` tab.
 - Discovery uses EFTS as the primary path with RSS fallback and IPO-vs-secondary filtering.
-- Discovery entity resolution now ignores `Unknown`-like SEC values and falls back to the better title/ticker fields when they exist.
+- Discovery entity resolution now prefers real source/profile names and skips nameless candidates instead of emitting `CIK ####` rows.
 - Discovery form values now fall back from `form_type` to `form` so the UI can show a non-blank form when SEC returns the alternate key.
 - Structured `lockup_conditions` data is now stored in snapshots and surfaced as its own panel in the company cards.
 - Market price/volume enrichment is now wired through `ipo_tracker/market.py`, `ipo_tracker/sec.py`, `ipo_tracker/db.py`, and `app.py`.
 
 ## Needs Follow-up
-- Principal holder extraction still needs better live coverage on ALAB now that the spacer-table parser is in place.
+- Live validation is still needed for the refreshed Discovery tab and the ALAB holder table after the latest fixes.
 
 ## Needs Regression Tests
 - Add parser tests for greenshoe disambiguation.
