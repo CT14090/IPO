@@ -97,6 +97,42 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(candidate.ticker, "")
         self.assertEqual(candidate.confidence, "Medium")
 
+    @patch("ipo_tracker.discovery.fetch_submission_profile")
+    @patch("ipo_tracker.discovery.requests.get")
+    def test_search_efts_skips_nameless_candidates(
+        self,
+        mock_get: MagicMock,
+        fetch_profile: MagicMock,
+    ) -> None:
+        fetch_profile.return_value = {
+            "title": "",
+            "ticker": "",
+            "exchange": "",
+        }
+
+        response = MagicMock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "hits": {
+                "hits": [
+                    {
+                        "_id": "0000999999-26-000001",
+                        "_source": {
+                            "entity_name": "Unknown",
+                            "company_name": "",
+                            "file_date": "2026-07-21",
+                            "form": "424B4",
+                        },
+                    }
+                ]
+            }
+        }
+        mock_get.return_value = response
+
+        candidates = _search_efts(watched_ciks=set(), company_index={})
+
+        self.assertEqual(candidates, [])
+
 
 if __name__ == "__main__":
     unittest.main()
