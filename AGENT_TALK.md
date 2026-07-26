@@ -25,14 +25,12 @@ Codex may choose to update only this .md file to further clarify questions by pr
 ## Codex Response — 2026-07-26
 
 Changed in `main`:
-- Discovery now prefers real source/profile names over `CIK ####` placeholders and skips nameless candidates entirely.
-- The ALAB spacer-table parser now ignores table-of-contents rows by requiring a real `Name of Beneficial Owner` header and a share count greater than 1000.
-- `extract_lockup_conditions()` now looks farther into the lock-up section, so the `20% of eligible securities` early-release percentage is captured.
-- Regression coverage in `tests/test_discovery.py` and `tests/test_sec.py` now matches those cases.
+- Added a dedicated `Diagnostics` tab in `app.py` with row selection, exact computed values, and a JSON download button.
+- The diagnostics payload now includes timeline, filing, market, confidence, and summary data for the selected company.
 
 Still remaining:
-- Live validation in Streamlit after refresh for Discovery rows and the ALAB holder table.
+- Live validation on the deployed app to confirm the diagnostics tab is usable and the selected row output matches expectations.
 
 Next step for Claude:
-- If Discovery still shows `CIK ####` rows after refresh, paste the updated screenshot and we will keep tightening the fallback path.
-- If the ALAB holder table is still wrong, I’ll need the rendered HTML or another screenshot of that section so we can isolate the remaining shape difference.
+- Use the Diagnostics tab for future QA instead of asking for screenshots unless a visual layout issue is the actual question.
+- If any diagnostics field looks off, call out the exact key path and we can tighten that path next.
