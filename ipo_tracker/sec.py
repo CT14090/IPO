@@ -1094,7 +1094,14 @@ def enrich_company(company: dict[str, Any]) -> dict[str, Any]:
 
     insider_sales: list[dict[str, Any]] = []
     if date.today() >= effective_unlock_dt:
-        insider_sales = fetch_post_unlock_sales(cik, effective_unlock_dt.isoformat())
+        existing_insider_sales = None
+        if company.get("effective_unlock_date") == effective_unlock_dt.isoformat():
+            existing_insider_sales = company.get("insider_sales", [])
+        insider_sales = fetch_post_unlock_sales(
+            cik,
+            effective_unlock_dt.isoformat(),
+            existing_records=existing_insider_sales,
+        )
     insider_sales_summary = summarize_insider_sales(insider_sales)
 
     market = fetch_market_data(company.get("ticker", ""), parsed_ipo_date)
