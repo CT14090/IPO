@@ -140,6 +140,103 @@ class InsiderSalesTests(unittest.TestCase):
         self.assertEqual(sales[0]["shares_sold"], 12_000)
         self.assertIn("sale-one.xml", sales[0]["source_url"])
 
+    @patch("ipo_tracker.insiders.fetch_text")
+    @patch("ipo_tracker.insiders.fetch_json")
+    def test_fetch_post_unlock_sales_reads_archived_submission_fragments(self, fetch_json_mock, fetch_text_mock) -> None:
+        fetch_json_mock.side_effect = [
+            {
+                "filings": {
+                    "recent": {
+                        "form": ["10-Q"],
+                        "accessionNumber": ["0001111111-26-000010"],
+                        "primaryDocument": ["quarterly.htm"],
+                        "filingDate": ["2026-05-01"],
+                    },
+                    "files": [
+                        {
+                            "name": "CIK0001111111-submissions-001.json",
+                            "filingCount": 1,
+                            "filingFrom": "2024-09-01",
+                            "filingTo": "2024-09-30",
+                        }
+                    ],
+                }
+            },
+            {
+                "form": ["4"],
+                "accessionNumber": ["0001111111-24-000111"],
+                "primaryDocument": ["archived-form4.xml"],
+                "filingDate": ["2024-09-20"],
+            },
+        ]
+        fetch_text_mock.return_value = """
+        <ownershipDocument>
+          <periodOfReport>2024-09-20</periodOfReport>
+          <reportingOwner>
+            <reportingOwnerId><rptOwnerName>Archived Insider</rptOwnerName></reportingOwnerId>
+          </reportingOwner>
+          <nonDerivativeTable>
+            <nonDerivativeTransaction>
+              <transactionDate><value>2024-09-19</value></transactionDate>
+              <transactionCoding><transactionCode>S</transactionCode></transactionCoding>
+              <transactionAmounts>
+                <transactionShares><value>9000</value></transactionShares>
+                <transactionPricePerShare><value>30.00</value></transactionPricePerShare>
+                <transactionAcquiredDisposedCode><value>D</value></transactionAcquiredDisposedCode>
+              </transactionAmounts>
+            </nonDerivativeTransaction>
+          </nonDerivativeTable>
+        </ownershipDocument>
+        """
+
+        sales = fetch_post_unlock_sales(1111111, "2024-09-15")
+
+        self.assertEqual(len(sales), 1)
+        self.assertEqual(sales[0]["owner_name"], "Archived Insider")
+        self.assertEqual(sales[0]["shares_sold"], 9_000)
+        self.assertIn("archived-form4.xml", sales[0]["source_url"])
+
+    @patch("ipo_tracker.insiders.fetch_text")
+    @patch("ipo_tracker.insiders.fetch_json")
+    def test_fetch_post_unlock_sales_uses_xml_companion_when_primary_document_is_html(self, fetch_json_mock, fetch_text_mock) -> None:
+        fetch_json_mock.return_value = {
+            "filings": {
+                "recent": {
+                    "form": ["4"],
+                    "accessionNumber": ["0001111111-24-000222"],
+                    "primaryDocument": ["form4.html"],
+                    "filingDate": ["2024-09-20"],
+                }
+            }
+        }
+        fetch_text_mock.side_effect = [
+            """
+            <ownershipDocument>
+              <periodOfReport>2024-09-20</periodOfReport>
+              <reportingOwner>
+                <reportingOwnerId><rptOwnerName>HTML Backed Insider</rptOwnerName></reportingOwnerId>
+              </reportingOwner>
+              <nonDerivativeTable>
+                <nonDerivativeTransaction>
+                  <transactionDate><value>2024-09-19</value></transactionDate>
+                  <transactionCoding><transactionCode>S</transactionCode></transactionCoding>
+                  <transactionAmounts>
+                    <transactionShares><value>6000</value></transactionShares>
+                    <transactionPricePerShare><value>27.50</value></transactionPricePerShare>
+                    <transactionAcquiredDisposedCode><value>D</value></transactionAcquiredDisposedCode>
+                  </transactionAmounts>
+                </nonDerivativeTransaction>
+              </nonDerivativeTable>
+            </ownershipDocument>
+            """,
+        ]
+
+        sales = fetch_post_unlock_sales(1111111, "2024-09-15")
+
+        self.assertEqual(len(sales), 1)
+        self.assertEqual(sales[0]["owner_name"], "HTML Backed Insider")
+        self.assertIn("form4.xml", sales[0]["source_url"])
+
     def test_summarize_insider_sales_totals_transactions_and_shares(self) -> None:
         summary = summarize_insider_sales(
             [
