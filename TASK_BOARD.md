@@ -36,7 +36,8 @@
 - Structured Form 4 lookup metadata is now embedded alongside stored insider-sale records, and the company-card / diagnostics surfaces can distinguish between `sales parsed`, `no qualifying filings`, `no sale transactions`, and `feed/doc resolution` problems without a new DB migration.
 - `ipo_tracker/insiders.py` no longer pulls `ipo_tracker.sec` at module import time; that import-hardening targeted the startup error path.
 - Large Form 4 candidate batches now fetch ownership documents in parallel using a bounded thread pool, which should reduce SEC refresh time without changing the validated parsing logic.
-- Because I could not execute the local app or tests from this session, the performance improvement still needs a fresh user-timed validation after deployment.
+- `app.py` now handles per-company `requests.RequestException` failures during `Refresh from SEC now`, keeps the previous snapshot for failed companies, and surfaces explicit sidebar warnings instead of crashing the whole app.
+- Because I could not execute the local app or tests from this session, the performance improvement and refresh-resilience behavior still need a fresh user validation after deployment.
 
 ## Covered By Tests
 - `tests/test_sec.py` covers lock-up extraction, fallback behavior, long-window early-release percent parsing, greenshoe disambiguation, early-release and earnings-trigger detection, 8-K amendment detection, cover-page IPO date extraction, holder parsing, trading-day offsets, effective unlock date resolution, and confidence scoring.
@@ -45,6 +46,8 @@
 
 ## Still Open
 - Validate whether the new parallel Form 4 document fetch materially reduces `Refresh from SEC now` time from the user's reported `> 1 minute`.
+- Validate that the new per-company refresh failure handling prevents full-app crashes when SEC returns `HTTPError` during live refresh.
+- Decide whether SEC rate-limit resilience needs an additional retry/backoff layer inside `ipo_tracker/sec.py`, or whether the app-level graceful degradation is enough.
 - Confirm that the new `insider_sales.lookup.status` values are enough in practice to explain remaining zero-count cases without needing a DB-level dedicated lookup table.
 - Decide later whether the overview-table `0` should gain a tooltip or footnote clarifying that the value means `parsed count`, not `confirmed none exist`.
 - Decide later whether post-unlock insider activity should remain sale-code `S` only or expand to include non-open-market codes such as `F`.
@@ -57,8 +60,10 @@
 - If refresh is still too slow after the thread-pool pass, move to an incremental Form 4 update strategy that reuses previously stored history instead of reprocessing the full owner-feed window every refresh.
 
 ## Live Validation Checklist
+- Press `Refresh from SEC now` after the latest deploy and confirm the app no longer crashes if one SEC request fails.
+- If a refresh warning appears, confirm the sidebar names the affected ticker and that the rest of the dashboard still loads from the last good snapshots.
 - Time a fresh `Refresh from SEC now` run after the latest deploy.
-- Confirm the app still boots cleanly after the latest performance pass.
+- Confirm the app still boots cleanly after the latest performance and refresh-resilience pass.
 - Confirm the `Diagnostics` tab includes `calendar_unlock_date`, `effective_unlock_date`, and the `insider_sales` section with `lookup`, `summary`, and `transactions`.
 - Confirm `RDDT` still shows `effective_unlock_date = 2024-08-09` and live parsed Form 4 sales after the performance change.
 - Ignore Form 144-only evidence when judging this feature, because Form 144 is intent-to-sell, not completed Form 4 sale execution.
