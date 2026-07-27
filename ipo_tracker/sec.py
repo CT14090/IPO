@@ -808,6 +808,7 @@ def enrich_company(company: dict[str, Any]) -> dict[str, Any]:
 
     Returns a dict with keys consumed by the DB snapshot and Streamlit UI.
     """
+    from .insiders import fetch_post_unlock_sales, summarize_insider_sales
     from .market import fetch_market_data  # local import to avoid circular dependency
 
     cik = company["cik"]
@@ -860,6 +861,10 @@ def enrich_company(company: dict[str, Any]) -> dict[str, Any]:
         lockup_conditions.lockup_days = DEFAULT_LOCKUP_DAYS
 
     unlock_date = (date.fromisoformat(parsed_ipo_date) + timedelta(days=lockup_conditions.lockup_days)).isoformat()
+    insider_sales: list[dict[str, Any]] = []
+    if date.today() >= date.fromisoformat(unlock_date):
+        insider_sales = fetch_post_unlock_sales(cik, unlock_date)
+    insider_sales_summary = summarize_insider_sales(insider_sales)
 
     market = fetch_market_data(company.get("ticker", ""), parsed_ipo_date)
     price_change_pct = market.get("price_change_pct")
@@ -875,6 +880,13 @@ def enrich_company(company: dict[str, Any]) -> dict[str, Any]:
     )
 
     notes = lockup_conditions.notes_summary()
+    if insider_sales_summary["transaction_count"]:
+        notes = (
+            f"{notes} | Post-unlock Form 4 sales parsed: "
+            f"{insider_sales_summary['transaction_count']} transaction(s) across "
+            f"{insider_sales_summary['filing_count']} filing(s), "
+            f"{insider_sales_summary['total_shares_sold']:,} shares sold"
+        )
     if confidence_details:
         notes = f"{notes} | {confidence_details}"
 
@@ -896,6 +908,7 @@ def enrich_company(company: dict[str, Any]) -> dict[str, Any]:
             "amendment_date": lockup_conditions.amendment_date,
             "amendment_url": lockup_conditions.amendment_url,
         },
+        "insider_sales": insider_sales,
         "ipo_price": market.get("ipo_price"),
         "current_price": market.get("current_price"),
         "price_change_pct": price_change_pct,
