@@ -7,7 +7,10 @@ from unittest.mock import patch
 from ipo_tracker.config import DEFAULT_LOCKUP_DAYS
 from ipo_tracker.market import calculate_price_change_pct
 from ipo_tracker.sec import (
+    LockupConditions,
+    add_trading_days,
     assess_data_confidence,
+    determine_effective_unlock_date,
     extract_ipo_date_from_text,
     extract_lockup_conditions,
     extract_lockup_days,
@@ -82,7 +85,7 @@ class SecParserTests(unittest.TestCase):
             <h2>Lock-Up Agreements</h2>
             <p>
               The lock-up period will terminate on the earlier of (i) the second trading day
-              after the date that we publicly announce earnings for the quarter or
+              after the date that we publicly announce earnings for the quarter ending June 30, 2024 or
               (ii) 180 days after the date of this prospectus.
             </p>
           </body>
@@ -95,6 +98,7 @@ class SecParserTests(unittest.TestCase):
         self.assertTrue(conditions.has_earnings_trigger)
         self.assertIsNone(conditions.early_release_pct)
         self.assertIn("earlier of", conditions.early_release_description.lower())
+        self.assertEqual(conditions.earnings_release_quarter_end, "2024-06-30")
 
     @patch("ipo_tracker.sec.fetch_text")
     @patch("ipo_tracker.sec.fetch_json")
@@ -244,6 +248,32 @@ class SecParserTests(unittest.TestCase):
         holders = extract_principal_holders(html)
 
         self.assertEqual(holders, [])
+
+    def test_add_trading_days_skips_weekends(self) -> None:
+        self.assertEqual(add_trading_days(date(2024, 8, 6), 3), date(2024, 8, 9))
+        self.assertEqual(add_trading_days(date(2024, 8, 8), 3), date(2024, 8, 13))
+
+    @patch("ipo_tracker.sec.find_earnings_release_filing")
+    def test_determine_effective_unlock_date_prefers_earlier_earnings_trigger(self, release_filing_mock) -> None:
+        release_filing_mock.return_value = ("2024-08-06", "https://www.sec.gov/example-earnings-8k")
+        conditions = LockupConditions(
+            lockup_days=180,
+            lockup_source="Lock-Up Agreements section: Regex match: 180 days",
+            has_early_release=True,
+            has_earnings_trigger=True,
+            earnings_release_quarter_end="2024-06-30",
+        )
+
+        effective_date, release_date, release_url, source = determine_effective_unlock_date(
+            1713445,
+            conditions,
+            calendar_unlock_date=date(2024, 9, 17),
+        )
+
+        self.assertEqual(effective_date, date(2024, 8, 9))
+        self.assertEqual(release_date, "2024-08-06")
+        self.assertEqual(release_url, "https://www.sec.gov/example-earnings-8k")
+        self.assertIn("Earnings trigger", source or "")
 
     def test_calculate_price_change_pct_uses_signed_direction(self) -> None:
         down_move = calculate_price_change_pct(62.03, 29.0)
