@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 from datetime import date
+from pathlib import PurePosixPath
 from typing import Any
 from xml.etree import ElementTree as ET
 
 import requests
 
-from .sec import fetch_json, fetch_text, filing_document_url, submissions_url
+from .sec import fetch_json, fetch_text, filing_document_url, normalize_cik, submissions_url
 
 
 FORM4_FORMS = {"4", "4/A"}
 SALE_TRANSACTION_CODES = {"S"}
+SUBMISSIONS_BASE_URL = "https://data.sec.gov/submissions/"
 
 
 def _recent_filing_values(recent: dict[str, Any], key: str) -> list[str]:
@@ -61,6 +63,90 @@ def _parse_iso_date(value: str | None) -> date | None:
         return date.fromisoformat(value)
     except ValueError:
         return None
+
+
+def _submission_fragment_url(name: str) -> str:
+    if name.startswith("http://") or name.startswith("https://"):
+        return name
+    return f"{SUBMISSIONS_BASE_URL}{name.lstrip('/')}"
+
+
+def _filing_records_from_container(container: dict[str, Any]) -> list[dict[str, str]]:
+    forms = _recent_filing_values(container, "form")
+    accession_numbers = _recent_filing_values(container, "accessionNumber")
+    primary_documents = _recent_filing_values(container, "primaryDocument")
+    filing_dates = _recent_filing_values(container, "filingDate")
+
+    records: list[dict[str, str]] = []
+    for form, accession_number, primary_document, filing_date in zip(
+        forms,
+        accession_numbers,
+        primary_documents,
+        filing_dates,
+    ):
+        records.append(
+            {
+                "form": form,
+                "accession_number": accession_number,
+                "primary_document": primary_document,
+                "filing_date": filing_date,
+            }
+        )
+    return records
+
+
+def _iter_submission_records(submissions: dict[str, Any]) -> list[dict[str, str]]:
+    records = _filing_records_from_container(submissions.get("filings", {}).get("recent", {}))
+
+    for file_info in submissions.get("filings", {}).get("files", []):
+        name = file_info.get("name")
+        if not name:
+            continue
+        try:
+            fragment = fetch_json(_submission_fragment_url(name))
+        except requests.RequestException:
+            continue
+        if isinstance(fragment, dict) and "filings" in fragment:
+            records.extend(_filing_records_from_container(fragment.get("filings", {}).get("recent", {})))
+        elif isinstance(fragment, dict):
+            records.extend(_filing_records_from_container(fragment))
+
+    deduped: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for record in records:
+        key = (record.get("accession_number", ""), record.get("primary_document", ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(record)
+    return deduped
+
+
+def _xml_companion_name(primary_document: str) -> str | None:
+    path = PurePosixPath(primary_document)
+    suffix = path.suffix.lower()
+    if suffix == ".xml":
+        return None
+    if suffix not in {".htm", ".html"}:
+        return None
+    return str(path.with_suffix(".xml"))
+
+
+def _candidate_document_urls(cik: int | str, accession_number: str, primary_document: str) -> list[str]:
+    candidates: list[str] = []
+    companion_name = _xml_companion_name(primary_document)
+    if companion_name:
+        candidates.append(filing_document_url(cik, accession_number, companion_name))
+    candidates.append(filing_document_url(cik, accession_number, primary_document))
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        deduped.append(candidate)
+    return deduped
 
 
 def parse_form4_sales(
@@ -143,29 +229,34 @@ def fetch_post_unlock_sales(cik: int | str, unlock_date: str | None) -> list[dic
     except requests.RequestException:
         return []
 
-    recent = submissions.get("filings", {}).get("recent", {})
-    forms = _recent_filing_values(recent, "form")
-    accession_numbers = _recent_filing_values(recent, "accessionNumber")
-    primary_documents = _recent_filing_values(recent, "primaryDocument")
-    filing_dates = _recent_filing_values(recent, "filingDate")
-
     sales: list[dict[str, Any]] = []
-    for form, accession_number, primary_document, filing_date in zip(
-        forms,
-        accession_numbers,
-        primary_documents,
-        filing_dates,
-    ):
+    for record in _iter_submission_records(submissions):
+        form = record.get("form")
+        accession_number = record.get("accession_number")
+        primary_document = record.get("primary_document")
+        filing_date = record.get("filing_date")
         if form not in FORM4_FORMS:
             continue
+        if not accession_number or not primary_document or not filing_date:
+            continue
+
         filing_dt = _parse_iso_date(filing_date)
         if filing_dt is None or filing_dt < unlock_dt:
             continue
 
-        source_url = filing_document_url(cik, accession_number, primary_document)
-        try:
-            xml_text = fetch_text(source_url)
-        except requests.RequestException:
+        xml_text = ""
+        source_url = None
+        for candidate_url in _candidate_document_urls(cik, accession_number, primary_document):
+            try:
+                candidate_text = fetch_text(candidate_url)
+            except requests.RequestException:
+                continue
+            if "<ownershipDocument" not in candidate_text:
+                continue
+            xml_text = candidate_text
+            source_url = candidate_url
+            break
+        if not xml_text or not source_url:
             continue
 
         for sale in parse_form4_sales(
