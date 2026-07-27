@@ -78,8 +78,16 @@ def _insider_sales_summary(row: dict) -> dict[str, Any]:
     return summarize_insider_sales(_insider_sales(row))
 
 
+def _current_unlock_date(row: dict) -> str | None:
+    return row.get("effective_unlock_date") or row.get("unlock_date")
+
+
+def _calendar_unlock_date(row: dict) -> str | None:
+    return row.get("unlock_date")
+
+
 def _has_unlocked_in_real_time(row: dict) -> bool:
-    unlock_date = row.get("unlock_date")
+    unlock_date = _current_unlock_date(row)
     if not unlock_date:
         return False
     try:
@@ -110,6 +118,7 @@ def _table_rows(rows: list[dict], minimum_confidence: int) -> list[dict[str, Any
             "Ticker": row["ticker"],
             "IPO Date": row["ipo_date"],
             "Unlock Date": row["unlock_date"],
+            "Calendar Unlock": row.get("calendar_unlock_date") or row["unlock_date"],
             "Days to Expiration": row["days_to_expiration"],
             "Review": _review_state(row, minimum_confidence),
             "Confidence": f"{row.get('confidence_label', 'Seeded')} ({_confidence_score(row)}/100)",
@@ -139,6 +148,7 @@ def _persist_snapshot(company_id: int, enriched: dict) -> None:
         "source_url": enriched["source_url"],
         "lockup_days": enriched["lockup_days"],
         "unlock_date": enriched["unlock_date"],
+        "effective_unlock_date": enriched.get("effective_unlock_date"),
         "principal_holders": enriched["principal_holders"],
         "lockup_source": enriched["lockup_source"],
         "lockup_conditions": enriched.get("lockup_conditions"),
@@ -173,18 +183,25 @@ def compute_dashboard_rows(reference_date: date) -> list[dict]:
     computed: list[dict] = []
     for row in rows:
         ipo_date = date.fromisoformat(row["ipo_date"])
-        unlock_date = (
+        calendar_unlock_date = (
             date.fromisoformat(row["unlock_date"])
             if row["unlock_date"]
             else ipo_date + timedelta(days=row["lockup_days"])
         )
-        days_to_expiration = (unlock_date - reference_date).days
+        effective_unlock_date = (
+            date.fromisoformat(row["effective_unlock_date"])
+            if row.get("effective_unlock_date")
+            else calendar_unlock_date
+        )
+        days_to_expiration = (effective_unlock_date - reference_date).days
         days_since_ipo = (reference_date - ipo_date).days
         unlock_progress = max(0.0, min(1.0, days_since_ipo / max(1, row["lockup_days"])))
         computed.append(
             {
                 **row,
-                "unlock_date": unlock_date.isoformat(),
+                "unlock_date": effective_unlock_date.isoformat(),
+                "effective_unlock_date": effective_unlock_date.isoformat(),
+                "calendar_unlock_date": calendar_unlock_date.isoformat(),
                 "days_to_expiration": days_to_expiration,
                 "days_since_ipo": days_since_ipo,
                 "unlock_progress": unlock_progress,
@@ -351,6 +368,8 @@ def _diagnostics_payload(
         "timeline": {
             "ipo_date": row.get("ipo_date"),
             "unlock_date": row.get("unlock_date"),
+            "calendar_unlock_date": row.get("calendar_unlock_date"),
+            "effective_unlock_date": row.get("effective_unlock_date"),
             "days_to_expiration": row.get("days_to_expiration"),
             "days_since_ipo": row.get("days_since_ipo"),
             "unlock_progress": row.get("unlock_progress"),
@@ -405,8 +424,21 @@ def render_lockup_conditions(conditions: dict) -> None:
             f"{conditions['early_release_pct']}%" if conditions.get("early_release_pct") is not None else "—",
         )
         col4.metric("8-K amendment", conditions.get("amendment_date") or "None")
+        if conditions.get("effective_unlock_date"):
+            st.caption(
+                f"Effective unlock date: {conditions['effective_unlock_date']}"
+                + (
+                    f" ({conditions.get('effective_unlock_source')})"
+                    if conditions.get("effective_unlock_source")
+                    else ""
+                )
+            )
+        if conditions.get("earnings_release_date"):
+            st.caption(f"Earnings release filing date: {conditions['earnings_release_date']}")
         if conditions.get("early_release_description"):
             st.caption(conditions["early_release_description"])
+        if conditions.get("earnings_release_url"):
+            st.link_button("Open earnings release filing", conditions["earnings_release_url"])
         if conditions.get("amendment_url"):
             st.link_button("Open 8-K amendment", conditions["amendment_url"])
 
@@ -490,6 +522,10 @@ def render_company_card(row: dict, minimum_confidence: int) -> None:
                 f"IPO date: **{row['ipo_date']}** | Unlock date: **{row['unlock_date']}** | "
                 f"Days to expiration: **{row['days_to_expiration']}**"
             )
+            if row.get("calendar_unlock_date") and row.get("calendar_unlock_date") != row.get("unlock_date"):
+                st.caption(
+                    f"Calendar unlock date: {row['calendar_unlock_date']} | Effective unlock uses the earlier earnings-trigger boundary."
+                )
             st.progress(
                 min(1.0, max(0.0, row["unlock_progress"])),
                 text=f"{progress_badge(row['days_to_expiration'])} from IPO to unlock",
