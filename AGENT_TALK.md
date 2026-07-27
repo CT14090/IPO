@@ -24,55 +24,53 @@ Codex may choose to update only this .md file to further clarify questions by pr
 
 ## Codex Handoff — 2026-07-27
 
-Current state after the user's latest live validation on Monday, July 27, 2026:
-- The incremental Form 4 refresh optimization is now live-confirmed.
+Current state after the user's newest live validation on Monday, July 27, 2026:
+- SEC/Form 4 repeat-refresh performance is now strongly confirmed.
 - User-measured refresh timing:
-  - first SEC refresh: about `30s`
-  - second SEC refresh: under `10s`
-- Latest `RDDT` diagnostics confirm the reuse path is actually being exercised, not just assumed:
+  - first SEC refresh: about `40s`
+  - second SEC refresh: about `5s`
+- Latest `RDDT` diagnostics confirm the incremental reuse path is live:
   - `status = sales_parsed`
   - `reused_transactions = 453`
   - `reused_filings = 53`
   - `candidate_filings = 2`
   - `documents_fetched = 2`
-  - `xml_documents = 1`
-  - `new_transactions_parsed = 12`
-- That means the major SEC refresh bottleneck from repeated historical Form 4 rebuilding is materially improved on repeat refreshes.
+  - `xml_documents = 2`
+  - `new_transactions_parsed = 26`
+- This is no longer ambiguous: repeated historical Form 4 work is dramatically reduced on the second refresh.
 
-New remaining issue surfaced by the same live validation:
-- Market data can still be wiped on refresh when Yahoo Finance rate-limits the app.
-- The user's diagnostics showed:
+Important new finding:
+- The market-snapshot preservation path does NOT appear to be surfacing correctly yet in live diagnostics.
+- The user still got:
   - `ipo_price = null`
   - `current_price = null`
   - `price_change_pct = null`
   - `avg_volume_30d = null`
   - `market_cap = null`
   - `market_data_note = "Market data fetch failed: Too Many Requests. Rate limited. Try after a while."`
-- So the SEC/Form 4 side improved, but the market-data path now needs graceful preservation under rate limiting.
+- The expected appended note (`Reusing previous snapshot market data.`) did NOT appear.
+- That means one of two things is likely true:
+  1. the previous snapshot already had null market values for `RDDT`, so there was nothing to preserve,
+  2. the preservation merge path is not actually receiving / matching the previous good market snapshot the way we expected.
 
-What I changed after that validation:
+Relevant code state already in `main`:
 - `ipo_tracker/market.py`
-  - Added `MARKET_VALUE_KEYS`.
-  - Added `market_data_has_values(data)` helper.
-  - Added `merge_market_snapshot(previous_snapshot, latest_market)`.
-  - Logic:
-    - if latest market payload has real values, keep it
-    - if latest payload failed with `Market data fetch failed: ...` and previous snapshot has real market values, reuse the previous market values
-    - append note text: `Reusing previous snapshot market data.`
+  - `MARKET_VALUE_KEYS`
+  - `market_data_has_values(data)`
+  - `merge_market_snapshot(previous_snapshot, latest_market)`
 - `app.py`
-  - `refresh_live_data()` now calls `merge_market_snapshot(company, enriched)` before persisting the refreshed snapshot.
-  - Goal: a transient Yahoo rate limit should no longer replace previously good market fields with nulls.
+  - `refresh_live_data()` calls `merge_market_snapshot(company, enriched)` before persisting the snapshot.
 
-Important nuance:
-- I have NOT been able to live-run or locally test this market-preservation path because the local shell/runtime bridge is unavailable in this session.
-- So the market-rate-limit preservation change is code-complete but still needs user validation after deploy.
+What is now firmly established:
+- The SEC/Form 4 optimization worked.
+- The cold refresh is still materially slower than the hot refresh, but that is now an optimization question, not a correctness failure.
+- The market-rate-limit fallback still needs debugging or at least better instrumentation.
 
-Current assessment:
-- SEC/Form 4 refresh performance: materially improved and now confirmed live.
-- Crash resilience: confirmed live.
-- Remaining practical issue: Yahoo rate-limit degradation should preserve prior market data instead of clearing the UI, but this still needs validation.
-
-Most useful next Claude contribution if needed:
-- Focus only on the market-data resilience question, not broad feature work.
-- If the preservation fix works, the next likely design question is whether we should also add a short TTL cache / backoff on Yahoo requests to reduce the chance of rate-limit hits.
-- If the preservation fix does NOT work, analyze whether the merge should happen earlier, later, or with a stricter note/error signature than `startswith("Market data fetch failed:")`.
+Best next Claude contribution:
+- Focus ONLY on diagnosing why the market snapshot reuse did not show up.
+- Please analyze likely failure modes in this exact flow, especially:
+  1. whether `company` in `refresh_live_data()` is guaranteed to include the last good market fields at the moment `merge_market_snapshot(company, enriched)` runs,
+  2. whether the previous snapshot could already be null because a prior failed refresh overwrote it before this fix shipped,
+  3. whether the preservation merge should happen inside `enrich_company()` or `_persist_snapshot()` instead of at the app layer,
+  4. whether additional diagnostics should explicitly expose `previous_market_available = true/false` so we can distinguish "preservation logic failed" from "nothing good was left to preserve".
+- Please prioritize the smallest reliable debug/improvement step rather than broad feature ideas.
