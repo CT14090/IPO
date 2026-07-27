@@ -7,19 +7,11 @@ from xml.etree import ElementTree as ET
 
 import requests
 
-from .sec import fetch_json, fetch_text, filing_document_url, normalize_cik, submissions_url
+from .sec import filing_document_url, iter_submission_records
 
 
 FORM4_FORMS = {"4", "4/A"}
 SALE_TRANSACTION_CODES = {"S"}
-SUBMISSIONS_BASE_URL = "https://data.sec.gov/submissions/"
-
-
-def _recent_filing_values(recent: dict[str, Any], key: str) -> list[str]:
-    values = recent.get(key, [])
-    if isinstance(values, list):
-        return values
-    return []
 
 
 def _strip_namespaces(root: ET.Element) -> None:
@@ -63,63 +55,6 @@ def _parse_iso_date(value: str | None) -> date | None:
         return date.fromisoformat(value)
     except ValueError:
         return None
-
-
-def _submission_fragment_url(name: str) -> str:
-    if name.startswith("http://") or name.startswith("https://"):
-        return name
-    return f"{SUBMISSIONS_BASE_URL}{name.lstrip('/')}"
-
-
-def _filing_records_from_container(container: dict[str, Any]) -> list[dict[str, str]]:
-    forms = _recent_filing_values(container, "form")
-    accession_numbers = _recent_filing_values(container, "accessionNumber")
-    primary_documents = _recent_filing_values(container, "primaryDocument")
-    filing_dates = _recent_filing_values(container, "filingDate")
-
-    records: list[dict[str, str]] = []
-    for form, accession_number, primary_document, filing_date in zip(
-        forms,
-        accession_numbers,
-        primary_documents,
-        filing_dates,
-    ):
-        records.append(
-            {
-                "form": form,
-                "accession_number": accession_number,
-                "primary_document": primary_document,
-                "filing_date": filing_date,
-            }
-        )
-    return records
-
-
-def _iter_submission_records(submissions: dict[str, Any]) -> list[dict[str, str]]:
-    records = _filing_records_from_container(submissions.get("filings", {}).get("recent", {}))
-
-    for file_info in submissions.get("filings", {}).get("files", []):
-        name = file_info.get("name")
-        if not name:
-            continue
-        try:
-            fragment = fetch_json(_submission_fragment_url(name))
-        except requests.RequestException:
-            continue
-        if isinstance(fragment, dict) and "filings" in fragment:
-            records.extend(_filing_records_from_container(fragment.get("filings", {}).get("recent", {})))
-        elif isinstance(fragment, dict):
-            records.extend(_filing_records_from_container(fragment))
-
-    deduped: list[dict[str, str]] = []
-    seen: set[tuple[str, str]] = set()
-    for record in records:
-        key = (record.get("accession_number", ""), record.get("primary_document", ""))
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(record)
-    return deduped
 
 
 def _xml_companion_name(primary_document: str) -> str | None:
@@ -224,13 +159,8 @@ def fetch_post_unlock_sales(cik: int | str, unlock_date: str | None) -> list[dic
     if unlock_dt is None:
         return []
 
-    try:
-        submissions = fetch_json(submissions_url(cik))
-    except requests.RequestException:
-        return []
-
     sales: list[dict[str, Any]] = []
-    for record in _iter_submission_records(submissions):
+    for record in iter_submission_records(cik, oldest_needed_date=unlock_dt):
         form = record.get("form")
         accession_number = record.get("accession_number")
         primary_document = record.get("primary_document")
@@ -248,6 +178,8 @@ def fetch_post_unlock_sales(cik: int | str, unlock_date: str | None) -> list[dic
         source_url = None
         for candidate_url in _candidate_document_urls(cik, accession_number, primary_document):
             try:
+                from .sec import fetch_text
+
                 candidate_text = fetch_text(candidate_url)
             except requests.RequestException:
                 continue
