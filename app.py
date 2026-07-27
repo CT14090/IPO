@@ -20,7 +20,7 @@ from ipo_tracker.db import (
     webhook_event_exists,
 )
 from ipo_tracker.discovery import discover_recent_ipo_candidates
-from ipo_tracker.insiders import summarize_insider_sales
+from ipo_tracker.insiders import split_insider_sales_records, summarize_insider_sales
 from ipo_tracker.market import calculate_price_change_pct
 from ipo_tracker.sec import enrich_company
 
@@ -69,13 +69,33 @@ def _confidence_score(row: dict) -> int:
         return 0
 
 
+def _insider_sales_records(row: dict) -> list[dict[str, Any]]:
+    records = row.get("insider_sales", [])
+    return records if isinstance(records, list) else []
+
+
 def _insider_sales(row: dict) -> list[dict[str, Any]]:
-    sales = row.get("insider_sales", [])
-    return sales if isinstance(sales, list) else []
+    _, sales = split_insider_sales_records(_insider_sales_records(row))
+    return sales
+
+
+def _insider_sales_lookup(row: dict) -> dict[str, Any]:
+    lookup, _ = split_insider_sales_records(_insider_sales_records(row))
+    if lookup:
+        return lookup
+    if not _has_unlocked_in_real_time(row):
+        return {
+            "status": "skipped_until_unlock",
+            "reason": "Effective unlock date has not passed yet, so post-unlock Form 4 lookup has not run.",
+        }
+    return {
+        "status": "no_lookup_metadata",
+        "reason": "This snapshot predates the structured Form 4 lookup diagnostics rollout.",
+    }
 
 
 def _insider_sales_summary(row: dict) -> dict[str, Any]:
-    return summarize_insider_sales(_insider_sales(row))
+    return summarize_insider_sales(_insider_sales_records(row))
 
 
 def _current_unlock_date(row: dict) -> str | None:
@@ -394,6 +414,7 @@ def _diagnostics_payload(
             "market_data_note": row.get("market_data_note", ""),
         },
         "insider_sales": {
+            "lookup": _insider_sales_lookup(row),
             "summary": _insider_sales_summary(row),
             "transactions": _insider_sales(row),
         },
@@ -468,12 +489,22 @@ def render_market_context(row: dict) -> None:
 
 def render_insider_sales(row: dict) -> None:
     insider_sales = _insider_sales(row)
+    lookup = _insider_sales_lookup(row)
     if not insider_sales and not _has_unlocked_in_real_time(row):
         return
 
     summary = _insider_sales_summary(row)
     with st.expander("Post-unlock Form 4 sales", expanded=False):
+        st.caption(f"Lookup status: {lookup.get('status', 'unknown')}")
+        if lookup.get("reason"):
+            st.caption(lookup["reason"])
+
         if not insider_sales:
+            metric_cols = st.columns(4)
+            metric_cols[0].metric("Feed entries", lookup.get("feed_entries", "—"))
+            metric_cols[1].metric("Candidate filings", lookup.get("candidate_filings", "—"))
+            metric_cols[2].metric("Documents fetched", lookup.get("documents_fetched", "—"))
+            metric_cols[3].metric("Transactions parsed", lookup.get("transactions_parsed", 0))
             st.caption("No post-unlock Form 4 sale transactions were parsed for this issuer yet.")
             return
 
