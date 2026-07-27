@@ -30,15 +30,18 @@
 - The SEC submissions path now uses cached company submissions and an Option C-style early-exit archive walk instead of blindly walking every archived fragment.
 - Earnings-trigger companies now compute a distinct `effective_unlock_date` from the earliest qualifying earnings release filing plus trading-day offset, instead of always using `ipo_date + lockup_days` as the only boundary.
 - The dashboard now uses `effective_unlock_date` for status, countdown, and Form 4 filtering while still preserving the calendar unlock date for transparency.
+- The Form 4 source path has now been replaced with the issuer-centric SEC `browse-edgar?...&type=4&owner=include&output=atom` feed instead of relying on issuer `submissions.json` records for ownership filings.
+- Structured Form 4 lookup metadata is now embedded alongside stored insider-sale records, and the company-card / diagnostics surfaces can distinguish between `sales parsed`, `no qualifying filings`, `no sale transactions`, and `feed/doc resolution` problems without a new DB migration.
 - Because I could not execute the local app or tests from this session, the patched positive-data path still needs live confirmation on `RDDT` after redeploy/refresh.
 
 ## Covered By Tests
 - `tests/test_sec.py` covers lock-up extraction, fallback behavior, long-window early-release percent parsing, greenshoe disambiguation, early-release and earnings-trigger detection, 8-K amendment detection, cover-page IPO date extraction, holder parsing, trading-day offsets, effective unlock date resolution, and confidence scoring.
 - `tests/test_discovery.py` covers source-name fallback and nameless-candidate skipping.
-- `tests/test_insiders.py` covers Form 4 sale-only parsing, post-unlock filtering, archived submission-fragment loading behavior, XML-companion fallback for HTML-backed Form 4 filings, and insider-sale summary math.
+- `tests/test_insiders.py` now covers owner-include Form 4 feed parsing, post-unlock filtering, direct XML filing links, HTML-to-XML companion fallback, zero-result lookup metadata, and insider-sale summary math that ignores embedded lookup metadata.
 
 ## Still Open
 - Confirm the patched Form 4 positive-data path against a real issuer with post-unlock sale filings. `RDDT` remains the primary validation target because its earnings-trigger unlock should move earlier than the naive `2024-09-17` calendar date.
+- Confirm that the new `insider_sales.lookup.status` values are enough in practice to explain remaining zero-count cases without needing a DB-level dedicated lookup table.
 - Decide later whether the overview-table `0` should gain a tooltip or footnote clarifying that the value means `parsed count`, not `confirmed none exist`.
 - Decide later whether post-unlock insider activity should remain sale-code `S` only or expand to include non-open-market codes such as `F`.
 - Improve per-holder lock-up term parsing.
@@ -49,10 +52,11 @@
 - Add market-impact context around unlock dates.
 
 ## Live Validation Checklist
-- Confirm the `Diagnostics` tab includes `calendar_unlock_date`, `effective_unlock_date`, and the `insider_sales` section with both `summary` and `transactions`.
+- Confirm the `Diagnostics` tab includes `calendar_unlock_date`, `effective_unlock_date`, and the `insider_sales` section with `lookup`, `summary`, and `transactions`.
 - Refresh the deployed app and inspect `RDDT` specifically.
 - Confirm `RDDT` no longer appears as simply calendar-upcoming if the effective earnings-trigger unlock is earlier.
-- Confirm `RDDT` shows a nonzero parsed Form 4 sale count and at least one transaction dated on or after the corrected effective unlock date.
+- Confirm `RDDT` now shows an informative `insider_sales.lookup.status` even if parsed sales remain zero.
+- Best-case: confirm `RDDT` shows a nonzero parsed Form 4 sale count and at least one transaction dated on or after the corrected effective unlock date.
 - Ignore Form 144-only evidence when judging this feature, because Form 144 is intent-to-sell, not completed Form 4 sale execution.
 
 ## Notes
