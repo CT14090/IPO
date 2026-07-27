@@ -7,6 +7,7 @@ from typing import Any
 
 import altair as alt
 import pandas as pd
+import requests
 import streamlit as st
 
 from ipo_tracker.alerts import hash_webhook_url, send_discord_webhook
@@ -187,15 +188,33 @@ def _persist_snapshot(company_id: int, enriched: dict) -> None:
     upsert_snapshot(company_id, **snapshot_kwargs)
 
 
-def refresh_live_data() -> list[dict]:
+def _describe_request_error(exc: requests.RequestException) -> str:
+    response = getattr(exc, "response", None)
+    if response is not None:
+        reason = response.reason or "HTTP error"
+        return f"HTTP {response.status_code} {reason}"
+    return str(exc) or exc.__class__.__name__
+
+
+def refresh_live_data() -> tuple[list[dict], int, list[str]]:
     ensure_sec_user_agent()
-    rows = []
+    rows: list[dict] = []
+    refreshed_count = 0
+    warnings: list[str] = []
     for company in load_dashboard_rows():
-        enriched = enrich_company(company)
+        try:
+            enriched = enrich_company(company)
+        except requests.RequestException as exc:
+            warnings.append(
+                f"{company['ticker']}: refresh failed ({_describe_request_error(exc)}). Keeping the previous snapshot for this company."
+            )
+            rows.append(company)
+            continue
         _persist_snapshot(company["company_id"], enriched)
         enriched["price_change_pct"] = _market_price_change_pct(enriched)
         rows.append({**company, **enriched})
-    return rows
+        refreshed_count += 1
+    return rows, refreshed_count, warnings
 
 
 def compute_dashboard_rows(reference_date: date) -> list[dict]:
@@ -695,10 +714,19 @@ with st.sidebar:
         st.caption("Discord webhook loaded from Streamlit secrets.")
     st.caption("For Streamlit Cloud: repo `CT14090/IPO`, branch `main`, entrypoint `app.py`.")
 
+refresh_warnings: list[str] = []
+refreshed_count = 0
 if refresh_clicked and use_live_sec:
     with st.spinner("Refreshing SEC data..."):
-        refresh_live_data()
-    st.sidebar.success("SEC enrichment refreshed.")
+        _, refreshed_count, refresh_warnings = refresh_live_data()
+    if refresh_warnings:
+        st.sidebar.warning(
+            f"SEC refresh completed with {len(refresh_warnings)} warning(s). Previous snapshots were kept for the failed companies."
+        )
+        for message in refresh_warnings:
+            st.sidebar.caption(message)
+    else:
+        st.sidebar.success(f"SEC enrichment refreshed for {refreshed_count} companies.")
 elif refresh_clicked and not use_live_sec:
     st.sidebar.warning("Enable live SEC enrichment to pull SEC filings.")
 
