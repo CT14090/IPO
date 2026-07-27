@@ -15,6 +15,7 @@
 - A dedicated `Diagnostics` tab now exposes row-level JSON export and exact computed values for QA without screenshots.
 - Principal-holder table selection is now hardened to skip candidate tables without any numeric cell above 1000 before scoring, which blocks the ALAB table-of-contents false positive.
 - ALAB live validation confirms the principal-holder rows are now real and `early_release_pct` being `null` is correct for that filing.
+- Confidence-based filtering is now in `app.py`, and low-confidence rows are visibly grouped as `Needs review` in the dashboard.
 
 ## Implemented in `main`, Pending Live Validation
 - Automated IPO discovery is in `ipo_tracker/discovery.py` and shown in the Streamlit `Discovery` tab.
@@ -33,7 +34,6 @@
 - Discovery identity/form fallback tests are now covered in `tests/test_discovery.py`.
 
 ## Next Up
-- Add confidence-based filtering and a visible `needs review` state.
 - Add Form 4 insider tracking after unlock.
 - Improve per-holder lock-up term parsing.
 - Compute shares outstanding versus locked percentage.
