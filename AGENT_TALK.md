@@ -24,27 +24,33 @@ Codex may choose to update only this .md file to further clarify questions by pr
 
 ## Codex Handoff — 2026-07-27
 
-Follow-up after the user hit a Streamlit startup `ImportError` on `from ipo_tracker.insiders import split_insider_sales_records, summarize_insider_sales`.
+State after the user's latest live validation:
+- `RDDT` is now confirmed correct live.
+- Effective unlock date resolved to `2024-08-09` instead of calendar `2024-09-17`.
+- Live diagnostics show `insider_sales.lookup.status = sales_parsed` and 453 parsed post-unlock sale transactions across 53 unique filings.
+- The startup `ImportError` is resolved in practice because the user is back in the app and diagnostics are working.
 
-What I changed just now:
+What I changed most recently:
 - `ipo_tracker/insiders.py`
-  - Removed top-level imports from `ipo_tracker.sec`.
-  - Replaced them with tiny local helper wrappers (`_normalize_cik`, `_sec_headers`, `_fetch_sec_text`) so `insiders.py` stays lightweight at module import time.
-  - Goal: reduce import-time coupling between `insiders.py` and `sec.py` and avoid opaque deployment-time startup failures.
+  - Kept the issuer-centric SEC owner-feed Form 4 source.
+  - Added a performance pass that parallelizes ownership-document fetches for large candidate batches only.
+  - Uses `ThreadPoolExecutor(max_workers=4)` when candidate filings are large (`>= 8`), while keeping small cases sequential for lower risk and more test stability.
 
-What did NOT change in behavior:
-- The issuer-centric Form 4 source is still the SEC `browse-edgar?...&type=4&owner=include&output=atom` feed.
-- Lookup metadata sentinel storage under `_lookup` is unchanged.
-- App-side diagnostics / UI logic for Form 4 lookup status is unchanged.
+Why this was the chosen optimization:
+- The user's `RDDT` diagnostics show the real hot path clearly:
+  - `candidate_filings`: 100
+  - `documents_fetched`: 100
+  - `xml_documents`: 100
+- That means the slowdown is dominated by sequential ownership-document fetches, not by lock-up parsing anymore.
+- This pass targets that exact bottleneck without changing the validated unlock logic or diagnostics structure.
 
-Why this likely matters:
-- The failing import line was in `app.py`, but the most likely real problem was an exception during `ipo_tracker.insiders` module initialization.
-- This change makes that module much safer to import on Streamlit startup before any Form 4 work actually runs.
+What still needs validation:
+- Measure whether SEC refresh time drops meaningfully from the user's reported `> 1 minute` after this parallel-fetch change is deployed.
+- We do NOT need to re-prove `RDDT` correctness first unless the output changes unexpectedly.
 
-What needs validation now:
-- Redeploy / refresh the Streamlit app and confirm it starts cleanly again.
-- If the app loads, inspect `RDDT` in Diagnostics as planned.
-- If the startup error persists, the next step is to capture the exact inner import exception from Streamlit logs because the issue is no longer likely to be caused by `insiders` importing `sec` too early.
+If refresh is still too slow after this deploy, best next investigation:
+- move from full re-scan behavior toward incremental reuse of already stored insider-sale history from the latest snapshot, so refreshes only fetch new Form 4 filings instead of reprocessing the entire owner-feed window every time.
+- That would be the next higher-leverage optimization, but it is a more stateful change than the thread-pool pass.
 
 Most useful next Claude contribution if needed:
-- Only if the startup error persists after this import-hardening change: reason through any remaining module-level startup hazards in `app.py`, `sec.py`, and `insiders.py` without assuming the redacted Streamlit traceback is telling the whole story.
+- Only if refresh is still too slow after this deploy: analyze the cleanest incremental-update design for stored Form 4 history, especially how to detect 'no new filings' safely without weakening correctness.
