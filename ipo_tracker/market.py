@@ -10,12 +10,27 @@ except ImportError:
     _YFINANCE_AVAILABLE = False
 
 
+MARKET_VALUE_KEYS = (
+    "ipo_price",
+    "current_price",
+    "price_change_pct",
+    "avg_volume_30d",
+    "market_cap",
+)
+
+
 def _safe_float(value: Any) -> float | None:
     try:
         f = float(value)
         return None if f != f else f  # reject NaN
     except (TypeError, ValueError):
         return None
+
+
+def market_data_has_values(data: dict[str, Any] | None) -> bool:
+    if not isinstance(data, dict):
+        return False
+    return any(data.get(key) is not None for key in MARKET_VALUE_KEYS)
 
 
 def calculate_price_change_pct(ipo_price: Any, current_price: Any) -> float | None:
