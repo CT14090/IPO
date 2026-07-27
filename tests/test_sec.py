@@ -1,10 +1,19 @@
 from __future__ import annotations
 
 import unittest
+from datetime import date
+from unittest.mock import patch
 
 from ipo_tracker.config import DEFAULT_LOCKUP_DAYS
 from ipo_tracker.market import calculate_price_change_pct
-from ipo_tracker.sec import assess_data_confidence, extract_lockup_conditions, extract_lockup_days, extract_principal_holders
+from ipo_tracker.sec import (
+    assess_data_confidence,
+    extract_ipo_date_from_text,
+    extract_lockup_conditions,
+    extract_lockup_days,
+    extract_principal_holders,
+    find_lockup_amendment_8k,
+)
 
 
 class SecParserTests(unittest.TestCase):
@@ -47,6 +56,85 @@ class SecParserTests(unittest.TestCase):
         self.assertTrue(conditions.has_early_release)
         self.assertEqual(conditions.early_release_pct, 20)
         self.assertIn("Earnings-linked trigger", conditions.notes_summary())
+
+    def test_extract_lockup_conditions_ignores_greenshoe_matches(self) -> None:
+        html = """
+        <html>
+          <body>
+            <h2>Underwriting</h2>
+            <p>The underwriters may purchase additional shares for a period of 30 days after the date of this prospectus.</p>
+            <h2>Lock-Up Restrictions</h2>
+            <p>Our directors, officers and stockholders agreed not to sell shares for 180 days after the date of this prospectus.</p>
+          </body>
+        </html>
+        """
+
+        conditions = extract_lockup_conditions(html)
+
+        self.assertEqual(conditions.lockup_days, 180)
+        self.assertIn("Lock-Up Restrictions section", conditions.lockup_source)
+        self.assertNotIn("30 days", conditions.lockup_source)
+
+    def test_extract_lockup_conditions_detects_early_release_and_earnings_trigger(self) -> None:
+        html = """
+        <html>
+          <body>
+            <h2>Lock-Up Agreements</h2>
+            <p>
+              The lock-up period will terminate on the earlier of (i) the second trading day
+              after the date that we publicly announce earnings for the quarter or
+              (ii) 180 days after the date of this prospectus.
+            </p>
+          </body>
+        </html>
+        """
+
+        conditions = extract_lockup_conditions(html)
+
+        self.assertTrue(conditions.has_early_release)
+        self.assertTrue(conditions.has_earnings_trigger)
+        self.assertIsNone(conditions.early_release_pct)
+        self.assertIn("earlier of", conditions.early_release_description.lower())
+
+    @patch("ipo_tracker.sec.fetch_text")
+    @patch("ipo_tracker.sec.fetch_json")
+    def test_find_lockup_amendment_8k_returns_matching_amendment(self, fetch_json_mock, fetch_text_mock) -> None:
+        fetch_json_mock.return_value = {
+            "filings": {
+                "recent": {
+                    "form": ["8-K", "10-Q"],
+                    "accessionNumber": ["0001111111-24-000001", "0001111111-24-000002"],
+                    "primaryDocument": ["amendment.htm", "quarterly.htm"],
+                    "filingDate": ["2024-08-06", "2024-08-10"],
+                }
+            }
+        }
+        fetch_text_mock.return_value = """
+        <html>
+          <body>
+            <p>The lock-up period will terminate on the earlier of the earnings release date or 180 days after the date of this prospectus.</p>
+          </body>
+        </html>
+        """
+
+        filing_date, filing_url, excerpt = find_lockup_amendment_8k(1736297, date(2024, 3, 20))
+
+        self.assertEqual(filing_date, "2024-08-06")
+        self.assertIn("amendment.htm", filing_url or "")
+        self.assertIn("lock-up period", (excerpt or "").lower())
+
+    def test_extract_ipo_date_from_cover_page_text(self) -> None:
+        html = """
+        <html>
+          <body>
+            <p>The date of this prospectus is March 19, 2024.</p>
+          </body>
+        </html>
+        """
+
+        parsed_date = extract_ipo_date_from_text(html)
+
+        self.assertEqual(parsed_date, "2024-03-19")
 
     def test_extract_principal_holders_cleans_headers_and_numeric_values(self) -> None:
         html = """
