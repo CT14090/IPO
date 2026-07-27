@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from functools import lru_cache
 from pathlib import PurePosixPath
@@ -12,6 +13,8 @@ import requests
 
 
 ATOM_NS = "{http://www.w3.org/2005/Atom}"
+DOCUMENT_FETCH_MAX_WORKERS = 4
+DOCUMENT_FETCH_PARALLEL_THRESHOLD = 8
 FORM4_FORMS = {"4", "4/A"}
 LOOKUP_META_KEY = "_lookup"
 OWNER_INCLUDE_FORM4_COUNT = 100
@@ -204,6 +207,40 @@ def _lookup_record(lookup: dict[str, Any]) -> dict[str, Any]:
     return {LOOKUP_META_KEY: lookup}
 
 
+def _fetch_sales_for_entry(entry: dict[str, str], unlock_dt: date) -> tuple[list[dict[str, Any]], int, int]:
+    xml_text = ""
+    source_url = None
+    documents_fetched = 0
+    xml_documents = 0
+    for candidate_url in _candidate_document_urls_from_filing_url(entry.get("filing_url", "")):
+        try:
+            candidate_text = _fetch_sec_text(candidate_url)
+        except requests.RequestException:
+            continue
+        documents_fetched += 1
+        if "<ownershipDocument" not in candidate_text:
+            continue
+        xml_text = candidate_text
+        source_url = candidate_url
+        xml_documents = 1
+        break
+    if not xml_text or not source_url:
+        return [], documents_fetched, xml_documents
+
+    sales: list[dict[str, Any]] = []
+    for sale in parse_form4_sales(
+        xml_text,
+        filing_date=entry.get("filing_date", ""),
+        source_url=source_url,
+        form=entry.get("form", ""),
+    ):
+        transaction_dt = _parse_iso_date(sale.get("transaction_date"))
+        if transaction_dt is None or transaction_dt < unlock_dt:
+            continue
+        sales.append(sale)
+    return sales, documents_fetched, xml_documents
+
+
 def split_insider_sales_records(records: list[dict[str, Any]] | None) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     lookup: dict[str, Any] = {}
     sales: list[dict[str, Any]] = []
@@ -336,35 +373,18 @@ def fetch_post_unlock_sales(cik: int | str, unlock_date: str | None) -> list[dic
         lookup["reason"] = "No Form 4 or 4/A filings on or after the unlock date were listed in the SEC owner=include feed."
         return [_lookup_record(lookup)]
 
-    sales: list[dict[str, Any]] = []
-    for entry in candidate_entries:
-        xml_text = ""
-        source_url = None
-        for candidate_url in _candidate_document_urls_from_filing_url(entry.get("filing_url", "")):
-            try:
-                candidate_text = _fetch_sec_text(candidate_url)
-            except requests.RequestException:
-                continue
-            lookup["documents_fetched"] += 1
-            if "<ownershipDocument" not in candidate_text:
-                continue
-            xml_text = candidate_text
-            source_url = candidate_url
-            lookup["xml_documents"] += 1
-            break
-        if not xml_text or not source_url:
-            continue
+    results: list[tuple[list[dict[str, Any]], int, int]] = []
+    if len(candidate_entries) >= DOCUMENT_FETCH_PARALLEL_THRESHOLD:
+        with ThreadPoolExecutor(max_workers=DOCUMENT_FETCH_MAX_WORKERS) as executor:
+            results = list(executor.map(lambda entry: _fetch_sales_for_entry(entry, unlock_dt), candidate_entries))
+    else:
+        results = [_fetch_sales_for_entry(entry, unlock_dt) for entry in candidate_entries]
 
-        for sale in parse_form4_sales(
-            xml_text,
-            filing_date=entry.get("filing_date", ""),
-            source_url=source_url,
-            form=entry.get("form", ""),
-        ):
-            transaction_dt = _parse_iso_date(sale.get("transaction_date"))
-            if transaction_dt is None or transaction_dt < unlock_dt:
-                continue
-            sales.append(sale)
+    sales: list[dict[str, Any]] = []
+    for entry_sales, documents_fetched, xml_documents in results:
+        lookup["documents_fetched"] += documents_fetched
+        lookup["xml_documents"] += xml_documents
+        sales.extend(entry_sales)
 
     sales.sort(
         key=lambda item: (
