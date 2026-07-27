@@ -15,7 +15,8 @@
 - `RDDT` is now live-confirmed end-to-end: effective unlock date resolved to `2024-08-09`, the calendar unlock remains visible as `2024-09-17`, and the diagnostics show `insider_sales.lookup.status = sales_parsed` with real post-unlock Form 4 sales.
 - The July 27, 2026 Streamlit startup `ImportError` is resolved in practice because the app is loading again and returning live diagnostics.
 - The July 27, 2026 per-company refresh failure handling is live-confirmed in the negative case: the app no longer hard-crashes on the refresh path that previously raised SEC `HTTPError`.
-- The July 27, 2026 user validation confirms the first speed pass was not enough: `Refresh from SEC now` still took roughly a minute even after the bounded thread-pool fetch change.
+- The incremental Form 4 refresh optimization is now live-confirmed: the user measured the first SEC refresh at about `30s` and the second at under `10s`.
+- The latest `RDDT` diagnostics confirm the repeat-refresh reuse path is active: `reused_transactions = 453`, `reused_filings = 53`, `candidate_filings = 2`, `documents_fetched = 2`, `xml_documents = 1`, and `new_transactions_parsed = 12`.
 
 ## Confirmed By Screenshots Or User Visual Pass
 - The market `% from IPO` column now uses the correct signed arithmetic.
@@ -24,7 +25,7 @@
 - Automated IPO discovery is visible in the dashboard and uses EFTS as the primary path with RSS fallback.
 - Confidence-based filtering is visible, and lower-confidence rows move into the `Needs review` bucket.
 - The current UI layout for overview, company cards, discovery, and diagnostics has not surfaced visual issues in the latest user pass.
-- The current Form 4 UI state is visually correct for a zero-result case: the table shows `0`, and the card explains that no post-unlock Form 4 sale transactions were parsed yet.
+- The current Form 4 UI state is visually correct for both zero-result and populated-result cases.
 - The pasted `RDDT` diagnostics JSON first confirmed the original zero-count bug, then later confirmed the fixed live path with real sales and corrected unlock timing.
 
 ## Implemented In `main`, Not Independently Re-Run In This Session
@@ -34,14 +35,12 @@
 - The SEC submissions path now uses cached company submissions and an Option C-style early-exit archive walk instead of blindly walking every archived fragment.
 - Earnings-trigger companies now compute a distinct `effective_unlock_date` from the earliest qualifying earnings release filing plus trading-day offset, instead of always using `ipo_date + lockup_days` as the only boundary.
 - The dashboard now uses `effective_unlock_date` for status, countdown, and Form 4 filtering while still preserving the calendar unlock date for transparency.
-- The Form 4 source path has now been replaced with the issuer-centric SEC `browse-edgar?...&type=4&owner=include&output=atom` feed instead of relying on issuer `submissions.json` records for ownership filings.
-- Structured Form 4 lookup metadata is now embedded alongside stored insider-sale records, and the company-card / diagnostics surfaces can distinguish between `sales parsed`, `no qualifying filings`, `no sale transactions`, and `feed/doc resolution` problems without a new DB migration.
+- The Form 4 source path has been replaced with the issuer-centric SEC `browse-edgar?...&type=4&owner=include&output=atom` feed instead of relying on issuer `submissions.json` records for ownership filings.
+- Structured Form 4 lookup metadata is embedded alongside stored insider-sale records, and the company-card / diagnostics surfaces can distinguish between `sales parsed`, `no qualifying filings`, `no sale transactions`, `sales reused`, and `feed/doc resolution` problems without a new DB migration.
 - `ipo_tracker/insiders.py` no longer pulls `ipo_tracker.sec` at module import time; that import-hardening targeted the startup error path.
-- Large Form 4 candidate batches now fetch ownership documents in parallel using a bounded thread pool, which reduced duplicate work but did not materially solve the full refresh-time problem in live use.
-- `app.py` now handles per-company `requests.RequestException` failures during `Refresh from SEC now`, keeps the previous snapshot for failed companies, and surfaces explicit sidebar warnings instead of crashing the whole app.
-- `ipo_tracker/insiders.py` now supports incremental Form 4 refresh by reusing previously stored insider-sale history, short-circuiting once the owner-feed reaches older already-known filing dates, and only fetching newer ownership documents when the effective unlock date is unchanged.
-- `ipo_tracker/sec.py` now passes prior insider-sale snapshot data into `fetch_post_unlock_sales(...)` when the company’s effective unlock date is unchanged, so repeat refreshes can avoid rebuilding the full Form 4 history window.
-- Because I could not execute the local app or tests from this session, the incremental-refresh optimization still needs a fresh user validation after deployment.
+- `app.py` handles per-company `requests.RequestException` failures during `Refresh from SEC now`, keeps the previous snapshot for failed companies, and surfaces explicit sidebar warnings instead of crashing the whole app.
+- `ipo_tracker/market.py` and `app.py` now preserve the previous market snapshot when a live Yahoo Finance request fails with a rate-limit style error, instead of intentionally overwriting good values with all-null fields.
+- Because I could not execute the local app or tests from this session, the market-snapshot preservation path still needs fresh user validation after deployment.
 
 ## Covered By Tests
 - `tests/test_sec.py` covers lock-up extraction, fallback behavior, long-window early-release percent parsing, greenshoe disambiguation, early-release and earnings-trigger detection, 8-K amendment detection, cover-page IPO date extraction, holder parsing, trading-day offsets, effective unlock date resolution, and confidence scoring.
@@ -49,9 +48,10 @@
 - `tests/test_insiders.py` now covers owner-include Form 4 feed parsing, post-unlock filtering, direct XML filing links, HTML-to-XML companion fallback, zero-result lookup metadata, incremental history reuse when there are no new filings, incremental merge behavior when a newer filing appears, and insider-sale summary math that ignores embedded lookup metadata.
 
 ## Still Open
-- Validate whether the new incremental Form 4 refresh materially reduces `Refresh from SEC now` time from the user's reported `~1 minute` baseline.
-- Decide whether SEC rate-limit resilience needs an additional retry/backoff layer inside `ipo_tracker/sec.py`, or whether the app-level graceful degradation is enough.
-- Confirm that the new `insider_sales.lookup.status` values are enough in practice to explain remaining zero-count cases without needing a DB-level dedicated lookup table.
+- Live-validate the new market-snapshot preservation path by confirming that a Yahoo rate-limit refresh keeps the previous `ipo_price`, `current_price`, `% from IPO`, volume, and market cap visible instead of replacing them with `null` / `—`.
+- Decide whether Yahoo rate-limit resilience needs an additional cache or retry/backoff layer beyond snapshot preservation.
+- Decide whether the cold-refresh path still needs another speed pass, even though repeat refreshes are now materially faster.
+- Confirm that the new `insider_sales.lookup.status` values are enough in practice to explain remaining edge cases without needing a DB-level dedicated lookup table.
 - Decide later whether the overview-table `0` should gain a tooltip or footnote clarifying that the value means `parsed count`, not `confirmed none exist`.
 - Decide later whether post-unlock insider activity should remain sale-code `S` only or expand to include non-open-market codes such as `F`.
 - Improve per-holder lock-up term parsing.
@@ -60,17 +60,15 @@
 - Add stronger automated IPO validation beyond the current discovery heuristics.
 - Add more explicit provenance summaries for parsed, inferred, and unknown fields.
 - Add market-impact context around unlock dates.
-- If refresh is still too slow after the incremental-reuse pass, add a more explicit snapshot-aware delta strategy or a targeted SEC retry/backoff layer, depending on whether the remaining time is dominated by repeated work or by upstream response latency.
 
 ## Live Validation Checklist
-- Press `Refresh from SEC now` after the latest deploy and confirm the app still does not crash if one SEC request fails.
-- Time two back-to-back `Refresh from SEC now` runs after the latest deploy. The second run is the key check because the new optimization is designed to reuse already-stored Form 4 history when the effective unlock date is unchanged.
-- In the `Diagnostics` tab, inspect an unlocked name such as `RDDT` and confirm whether `insider_sales.lookup.status` now reports an incremental-reuse state such as `sales_reused` when no newer filings are found.
-- If a refresh warning appears, confirm the sidebar names the affected ticker and that the rest of the dashboard still loads from the last good snapshots.
-- Confirm the app still boots cleanly after the latest performance and refresh-resilience pass.
+- Press `Refresh from SEC now` twice after the latest deploy and confirm the first run is the slower cold pass while the second run remains materially faster because it reuses stored Form 4 history.
+- In the `Diagnostics` tab for an unlocked name such as `RDDT`, confirm the lookup metadata still shows reuse-oriented fields such as `reused_transactions`, `reused_filings`, and a sharply reduced candidate/document fetch count on repeat refresh.
+- Confirm the app still does not crash if one SEC request fails and that the sidebar still names the affected ticker.
 - Confirm the `Diagnostics` tab includes `calendar_unlock_date`, `effective_unlock_date`, and the `insider_sales` section with `lookup`, `summary`, and `transactions`.
 - Confirm `RDDT` still shows `effective_unlock_date = 2024-08-09` and live parsed Form 4 sales after the incremental-refresh change.
-- Ignore Form 144-only evidence when judging this feature, because Form 144 is intent-to-sell, not completed Form 4 sale execution.
+- Force or wait for a Yahoo Finance rate-limit scenario and confirm market values stay populated from the prior snapshot while `market_data_note` explains the reuse.
+- Ignore Form 144-only evidence when judging the Form 4 feature, because Form 144 is intent-to-sell, not completed Form 4 sale execution.
 
 ## Notes
 - The repo is connected to GitHub live and I can read and update files on `main`.
