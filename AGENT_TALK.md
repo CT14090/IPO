@@ -24,33 +24,39 @@ Codex may choose to update only this .md file to further clarify questions by pr
 
 ## Codex Handoff — 2026-07-27
 
-State after the user's latest live validation:
-- `RDDT` is now confirmed correct live.
-- Effective unlock date resolved to `2024-08-09` instead of calendar `2024-09-17`.
-- Live diagnostics show `insider_sales.lookup.status = sales_parsed` and 453 parsed post-unlock sale transactions across 53 unique filings.
-- The startup `ImportError` is resolved in practice because the user is back in the app and diagnostics are working.
+Current state after the user's latest refresh crash report:
+- The user hit a live Streamlit crash on `Refresh from SEC now` caused by `requests.exceptions.HTTPError` during `ipo_tracker/sec.py -> fetch_json(...) -> load_company_submissions(...)`.
+- The traceback showed the failure happened inside `enrich_company(company)` while `app.py` was refreshing all companies sequentially.
+- The existing refresh path assumed every company refresh would succeed, so a single SEC HTTP failure crashed the whole app.
 
-What I changed most recently:
-- `ipo_tracker/insiders.py`
-  - Kept the issuer-centric SEC owner-feed Form 4 source.
-  - Added a performance pass that parallelizes ownership-document fetches for large candidate batches only.
-  - Uses `ThreadPoolExecutor(max_workers=4)` when candidate filings are large (`>= 8`), while keeping small cases sequential for lower risk and more test stability.
+What I changed just now:
+- `app.py`
+  - Added `import requests`.
+  - Added `_describe_request_error()` to make SEC/network failures human-readable in the sidebar.
+  - Changed `refresh_live_data()` to catch `requests.RequestException` per company.
+  - On a per-company refresh failure, the app now:
+    - records a warning message with the ticker and HTTP/network error,
+    - keeps the previous snapshot for that company,
+    - continues refreshing the rest of the watchlist instead of crashing the whole app.
+  - Updated the sidebar refresh UI so it now:
+    - shows success when all companies refreshed,
+    - shows a warning summary plus per-ticker messages when one or more companies failed.
 
-Why this was the chosen optimization:
-- The user's `RDDT` diagnostics show the real hot path clearly:
-  - `candidate_filings`: 100
-  - `documents_fetched`: 100
-  - `xml_documents`: 100
-- That means the slowdown is dominated by sequential ownership-document fetches, not by lock-up parsing anymore.
-- This pass targets that exact bottleneck without changing the validated unlock logic or diagnostics structure.
+Why this was the chosen fix:
+- It directly addresses the user's current blocker: the app should stay usable even if SEC temporarily rejects or rate-limits one request.
+- It does not silently hide errors. Failures are now explicit and localized.
+- It avoids losing already-good snapshot data for unaffected companies.
+- It is low-risk relative to adding a retry/backoff layer inside every SEC fetch call without first re-validating the live failure mode.
 
-What still needs validation:
-- Measure whether SEC refresh time drops meaningfully from the user's reported `> 1 minute` after this parallel-fetch change is deployed.
-- We do NOT need to re-prove `RDDT` correctness first unless the output changes unexpectedly.
-
-If refresh is still too slow after this deploy, best next investigation:
-- move from full re-scan behavior toward incremental reuse of already stored insider-sale history from the latest snapshot, so refreshes only fetch new Form 4 filings instead of reprocessing the entire owner-feed window every time.
-- That would be the next higher-leverage optimization, but it is a more stateful change than the thread-pool pass.
+What is still open:
+- We still need the user to validate live that `Refresh from SEC now` no longer crashes the app.
+- We still need to measure whether refresh time improves materially after the earlier thread-pool Form 4 fetch pass.
+- If SEC HTTP failures remain common, the next candidate change is a targeted retry/backoff layer in `ipo_tracker/sec.py` and possibly a lower or adaptive Form 4 fetch concurrency.
+- If refresh remains too slow even when it no longer crashes, the next higher-leverage optimization is incremental Form 4 history reuse instead of full owner-feed reprocessing on every refresh.
 
 Most useful next Claude contribution if needed:
-- Only if refresh is still too slow after this deploy: analyze the cleanest incremental-update design for stored Form 4 history, especially how to detect 'no new filings' safely without weakening correctness.
+- If the live app still throws SEC-related warnings frequently after this change, analyze whether the better next step is:
+  1. SEC request retry/backoff in `ipo_tracker/sec.py`,
+  2. lower/adaptive Form 4 parallelism in `ipo_tracker/insiders.py`, or
+  3. incremental snapshot-aware Form 4 refresh.
+- Prioritize based on likely root cause: rate limiting vs wasted repeated work.
