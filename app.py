@@ -61,6 +61,51 @@ def _market_price_change_pct(row: dict) -> float | None:
         return None
 
 
+def _confidence_score(row: dict) -> int:
+    try:
+        return int(row.get("confidence_score", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _review_state(row: dict, minimum_confidence: int) -> str:
+    return "Needs review" if _confidence_score(row) < minimum_confidence else "Ready"
+
+
+def _split_rows_by_confidence(rows: list[dict], minimum_confidence: int) -> tuple[list[dict], list[dict]]:
+    ready_rows: list[dict] = []
+    needs_review_rows: list[dict] = []
+    for row in rows:
+        if _review_state(row, minimum_confidence) == "Needs review":
+            needs_review_rows.append(row)
+        else:
+            ready_rows.append(row)
+    return ready_rows, needs_review_rows
+
+
+def _table_rows(rows: list[dict], minimum_confidence: int) -> list[dict[str, Any]]:
+    return [
+        {
+            "Company": row["company_name"],
+            "Ticker": row["ticker"],
+            "IPO Date": row["ipo_date"],
+            "Unlock Date": row["unlock_date"],
+            "Days to Expiration": row["days_to_expiration"],
+            "Review": _review_state(row, minimum_confidence),
+            "Confidence": f"{row.get('confidence_label', 'Seeded')} ({_confidence_score(row)}/100)",
+            "Status": row["status"],
+            "Lock-up Days": row["lockup_days"],
+            "IPO Price": _format_currency(row.get("ipo_price")),
+            "Current Price": _format_currency(row.get("current_price")),
+            "% From IPO": _format_percent(_market_price_change_pct(row)),
+            "30D Avg Volume": _format_integer(row.get("avg_volume_30d")),
+            "Market Cap": _format_integer(row.get("market_cap")),
+            "Source": row["lockup_source"],
+        }
+        for row in rows
+    ]
+
+
 def _persist_snapshot(company_id: int, enriched: dict) -> None:
     """
     Keep refreshes resilient if a deployed app revision temporarily lags behind
@@ -259,11 +304,17 @@ def _format_percent(value) -> str:
         return "—"
 
 
-def _diagnostics_label(row: dict) -> str:
-    return f"{row.get('ticker', '—')} | {row.get('company_name', 'Unknown')} | CIK {row.get('cik', '—')}"
+def _diagnostics_label(row: dict, minimum_confidence: int) -> str:
+    return f"{row.get('ticker', '—')} | {row.get('company_name', 'Unknown')} | CIK {row.get('cik', '—')} | {_review_state(row, minimum_confidence)}"
 
 
-def _diagnostics_payload(row: dict, rows: list[dict], reference_date: date, summary: dict[str, int]) -> dict[str, Any]:
+def _diagnostics_payload(
+    row: dict,
+    rows: list[dict],
+    reference_date: date,
+    summary: dict[str, int],
+    minimum_confidence: int,
+) -> dict[str, Any]:
     return {
         "generated_at": date.today().isoformat(),
         "reference_date": reference_date.isoformat(),
@@ -305,6 +356,10 @@ def _diagnostics_payload(row: dict, rows: list[dict], reference_date: date, summ
             "score": row.get("confidence_score", 0),
             "label": row.get("confidence_label", "Seeded"),
             "details": row.get("confidence_details", ""),
+        },
+        "review": {
+            "minimum_confidence": minimum_confidence,
+            "state": _review_state(row, minimum_confidence),
         },
         "selected_row_index": next((index for index, candidate in enumerate(rows) if candidate.get("company_id") == row.get("company_id")), None),
     }
@@ -353,11 +408,15 @@ def render_market_context(row: dict) -> None:
             st.caption(row["market_data_note"])
 
 
-def render_company_card(row: dict) -> None:
-    confidence_score = row.get("confidence_score", 0)
+def render_company_card(row: dict, minimum_confidence: int) -> None:
+    confidence_score = _confidence_score(row)
     confidence_label = row.get("confidence_label", "Seeded")
     confidence_details = row.get("confidence_details", "Seeded watchlist entry ready for SEC enrichment.")
-    with st.expander(f"{row['ticker']}  |  {row['company_name']}", expanded=row["days_to_expiration"] <= DEFAULT_ALERT_DAYS):
+    review_state = _review_state(row, minimum_confidence)
+    label = f"{row['ticker']}  |  {row['company_name']}"
+    if review_state == "Needs review":
+        label += "  |  Needs review"
+    with st.expander(label, expanded=row["days_to_expiration"] <= DEFAULT_ALERT_DAYS):
         left, right = st.columns([2, 1])
         with left:
             st.write(
@@ -384,27 +443,34 @@ def render_company_card(row: dict) -> None:
                 st.caption("SEC filing link will appear after a successful live refresh.")
             st.metric("Days to Expiration", row["days_to_expiration"])
             st.metric("Confidence", f"{confidence_score}/100")
+            st.metric("Review", review_state)
         if row["principal_holders"]:
             st.subheader("Principal holders parsed from filing")
             st.json(row["principal_holders"])
 
 
-def render_diagnostics_tab(rows: list[dict], reference_date: date, summary: dict[str, int]) -> None:
+def render_diagnostics_tab(
+    rows: list[dict],
+    reference_date: date,
+    summary: dict[str, int],
+    minimum_confidence: int,
+) -> None:
     st.subheader("Diagnostics")
     st.caption("Inspect the exact values behind the dashboard and download them as JSON for debugging or QA.")
     if not rows:
         st.info("No dashboard rows are available yet.")
         return
 
-    options = {_diagnostics_label(row): row for row in rows}
+    options = {_diagnostics_label(row, minimum_confidence): row for row in rows}
     selected_label = st.selectbox("Company to inspect", list(options.keys()), index=0)
     selected_row = options[selected_label]
-    payload = _diagnostics_payload(selected_row, rows, reference_date, summary)
+    payload = _diagnostics_payload(selected_row, rows, reference_date, summary, minimum_confidence)
 
-    metric_cols = st.columns(3)
+    metric_cols = st.columns(4)
     metric_cols[0].metric("Ticker", selected_row.get("ticker", "—"))
     metric_cols[1].metric("Days to Expiration", selected_row.get("days_to_expiration", "—"))
     metric_cols[2].metric("Confidence", f"{selected_row.get('confidence_score', 0)}/100")
+    metric_cols[3].metric("Review", _review_state(selected_row, minimum_confidence))
 
     st.download_button(
         "Download diagnostics JSON",
@@ -472,6 +538,15 @@ with st.sidebar:
     )
     reference_date = DEMO_REFERENCE_DATE if reference_mode == "Demo snapshot" else date.today()
     st.caption(f"Using reference date: {reference_date.isoformat()}")
+    minimum_confidence = st.slider(
+        "Minimum confidence for ready rows",
+        min_value=0,
+        max_value=100,
+        value=70,
+        step=5,
+        help="Rows below this threshold move into a Needs review bucket instead of the main dashboard view.",
+    )
+    st.caption("Lower-confidence rows stay available in the Companies tab under Needs review.")
     secret_webhook = read_secret("discord_webhook_url", "")
     webhook_url = st.text_input(
         "Discord webhook URL",
@@ -493,6 +568,7 @@ elif refresh_clicked and not use_live_sec:
     st.sidebar.warning("Enable live SEC enrichment to pull SEC filings.")
 
 rows = compute_dashboard_rows(reference_date)
+ready_rows, needs_review_rows = _split_rows_by_confidence(rows, minimum_confidence)
 
 if run_alerts and webhook_url and refresh_clicked:
     alert_messages = maybe_send_alerts(rows, webhook_url, reference_date)
@@ -500,13 +576,17 @@ if run_alerts and webhook_url and refresh_clicked:
         st.sidebar.info(message)
 
 total = len(rows)
-upcoming = sum(1 for row in rows if row["days_to_expiration"] > 0)
-due_soon = sum(1 for row in rows if 0 <= row["days_to_expiration"] <= 7)
-expired = sum(1 for row in rows if row["days_to_expiration"] < 0)
-watchlist_sources = len({row["source_url"] for row in rows if row["source_url"]})
-avg_confidence = round(sum(row.get("confidence_score", 0) for row in rows) / max(1, total))
+ready_total = len(ready_rows)
+needs_review_total = len(needs_review_rows)
+upcoming = sum(1 for row in ready_rows if row["days_to_expiration"] > 0)
+due_soon = sum(1 for row in ready_rows if 0 <= row["days_to_expiration"] <= 7)
+expired = sum(1 for row in ready_rows if row["days_to_expiration"] < 0)
+watchlist_sources = len({row["source_url"] for row in ready_rows if row["source_url"]})
+avg_confidence = round(sum(_confidence_score(row) for row in ready_rows) / max(1, ready_total))
 summary = {
     "total": total,
+    "ready": ready_total,
+    "needs_review": needs_review_total,
     "upcoming": upcoming,
     "due_soon": due_soon,
     "expired": expired,
@@ -526,52 +606,56 @@ overview_tab, companies_tab, discovery_tab, diagnostics_tab, deployment_tab = st
 
 with overview_tab:
     metric_cols = st.columns(5)
-    metric_cols[0].metric("Watchlist IPOs", total)
+    metric_cols[0].metric("Ready IPOs", ready_total)
     metric_cols[1].metric("Upcoming", upcoming)
     metric_cols[2].metric("Due in 7 days", due_soon)
     metric_cols[3].metric("Expired", expired)
     metric_cols[4].metric("Avg confidence", f"{avg_confidence}/100")
-    st.caption(f"{watchlist_sources} company records currently have SEC filing links.")
+    st.caption(
+        f"Showing {ready_total} ready row(s) and {needs_review_total} needs-review row(s) out of {total} watchlist companies. "
+        f"{watchlist_sources} ready company record(s) currently have SEC filing links."
+    )
 
     st.subheader("Unlock timeline")
     st.caption(
         "Each bar starts at the IPO date and ends at the estimated unlock date. The demo snapshot intentionally surfaces multiple overlapping unlock windows."
     )
-    st.altair_chart(timeline_chart(rows), use_container_width=True)
+    if ready_rows:
+        st.altair_chart(timeline_chart(ready_rows), use_container_width=True)
+    else:
+        st.info("No rows meet the current confidence threshold for the timeline view.")
 
     if due_soon:
-        due_tickers = ", ".join(f"{row['ticker']} ({row['days_to_expiration']}d)" for row in rows if 0 <= row["days_to_expiration"] <= 7)
+        due_tickers = ", ".join(f"{row['ticker']} ({row['days_to_expiration']}d)" for row in ready_rows if 0 <= row["days_to_expiration"] <= 7)
         st.success(f"Due soon: {due_tickers}")
     else:
         st.success("No lockups are due within the next 7 days for the chosen reference date.")
 
     st.subheader("Upcoming and recent unlocks")
-    table_rows = [
-        {
-            "Company": row["company_name"],
-            "Ticker": row["ticker"],
-            "IPO Date": row["ipo_date"],
-            "Unlock Date": row["unlock_date"],
-            "Days to Expiration": row["days_to_expiration"],
-            "Confidence": f"{row.get('confidence_label', 'Seeded')} ({row.get('confidence_score', 0)}/100)",
-            "Status": row["status"],
-            "Lock-up Days": row["lockup_days"],
-            "IPO Price": _format_currency(row.get("ipo_price")),
-            "Current Price": _format_currency(row.get("current_price")),
-            "% From IPO": _format_percent(_market_price_change_pct(row)),
-            "30D Avg Volume": _format_integer(row.get("avg_volume_30d")),
-            "Market Cap": _format_integer(row.get("market_cap")),
-            "Source": row["lockup_source"],
-        }
-        for row in rows
-    ]
-    st.dataframe(pd.DataFrame(table_rows), use_container_width=True, hide_index=True)
+    if ready_rows:
+        st.dataframe(pd.DataFrame(_table_rows(ready_rows, minimum_confidence)), use_container_width=True, hide_index=True)
+    else:
+        st.info("No ready rows meet the current confidence threshold.")
+    if needs_review_rows:
+        st.warning(
+            f"{needs_review_total} row(s) are below the confidence threshold and grouped as Needs review."
+        )
+        st.dataframe(pd.DataFrame(_table_rows(needs_review_rows, minimum_confidence)), use_container_width=True, hide_index=True)
 
 with companies_tab:
     st.subheader("Company detail")
     st.caption("Each company expands into a compact card so the layout stays readable on smaller screens.")
-    for row in rows:
-        render_company_card(row)
+    if ready_rows:
+        st.subheader(f"Ready ({ready_total})")
+        for row in ready_rows:
+            render_company_card(row, minimum_confidence)
+    else:
+        st.info("No rows meet the current confidence threshold.")
+    if needs_review_rows:
+        with st.expander(f"Needs review ({needs_review_total})", expanded=False):
+            st.caption("These rows are below the current confidence threshold and deserve a closer look.")
+            for row in needs_review_rows:
+                render_company_card(row, minimum_confidence)
 
 with discovery_tab:
     st.subheader("Recent IPO candidates from SEC")
@@ -596,7 +680,7 @@ with discovery_tab:
         st.caption("Use this tab to spot newly filed IPO candidates before they appear in the lock-up watchlist.")
 
 with diagnostics_tab:
-    render_diagnostics_tab(rows, reference_date, summary)
+    render_diagnostics_tab(rows, reference_date, summary, minimum_confidence)
 
 with deployment_tab:
     st.subheader("How to deploy this app")
