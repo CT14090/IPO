@@ -21,20 +21,23 @@
 - Confidence-based filtering is visible, and lower-confidence rows move into the `Needs review` bucket.
 - The current UI layout for overview, company cards, discovery, and diagnostics has not surfaced visual issues in the latest user pass.
 - The current Form 4 UI state is visually correct for a zero-result case: the table shows `0`, and the card explains that no post-unlock Form 4 sale transactions were parsed yet.
+- The pasted `RDDT` diagnostics JSON confirms the first Form 4 rollout returned zero transactions even though `RDDT` should have post-unlock sale activity, so the issue was a real data-ingestion gap rather than just missing visual validation.
 
 ## Implemented In `main`, Not Independently Re-Run In This Session
 - Post-unlock Form 4 insider-sale tracking is now wired through `ipo_tracker/insiders.py`, `ipo_tracker/sec.py`, `ipo_tracker/db.py`, and `app.py`.
 - Refreshes now persist `insider_sales_json` into snapshots so the Form 4 data survives reloads.
 - Diagnostics JSON now includes both an insider-sales summary and the parsed transaction list.
-- Because I could not execute the local app or tests from this session, the positive-data path for Form 4 still needs confirmation on a company that actually has qualifying post-unlock sales.
+- The Form 4 fetcher now reads archived SEC submission fragments listed under `filings.files`, instead of only `filings.recent`.
+- The Form 4 fetcher now prefers the XML companion document when SEC lists an HTML primary document for an ownership filing.
+- Because I could not execute the local app or tests from this session, the patched positive-data path still needs live confirmation on `RDDT` after redeploy/refresh.
 
 ## Covered By Tests
 - `tests/test_sec.py` covers lock-up extraction, fallback behavior, long-window early-release percent parsing, greenshoe disambiguation, early-release and earnings-trigger detection, 8-K amendment detection, cover-page IPO date extraction, holder parsing, and confidence scoring.
 - `tests/test_discovery.py` covers source-name fallback and nameless-candidate skipping.
-- `tests/test_insiders.py` covers Form 4 sale-only parsing, post-unlock filtering, and insider-sale summary math.
+- `tests/test_insiders.py` covers Form 4 sale-only parsing, post-unlock filtering, archived submission-fragment loading, XML-companion fallback for HTML-backed Form 4 filings, and insider-sale summary math.
 
 ## Still Open
-- Confirm the Form 4 positive-data path against a real issuer with post-unlock sale filings. `RDDT` is now the primary validation target because its unlock date of `2024-09-17` is in the past and public Form 4 sale activity exists.
+- Confirm the patched Form 4 positive-data path against a real issuer with post-unlock sale filings. `RDDT` remains the primary validation target because its unlock date of `2024-09-17` is in the past and public Form 4 sale activity exists.
 - Decide later whether the overview-table `0` should gain a tooltip or footnote clarifying that the value means `parsed count`, not `confirmed none exist`.
 - Improve per-holder lock-up term parsing.
 - Compute shares outstanding versus locked percentage.
