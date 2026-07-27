@@ -9,29 +9,22 @@
 - Post-IPO 8-K monitoring is implemented in `ipo_tracker/sec.py` and is visible in live ALAB validation.
 - IPO date from cover-page parsing is implemented in `ipo_tracker/sec.py` and is visible in live ALAB validation.
 - Refresh-path compatibility is hardened in `ipo_tracker/db.py` so snapshot writes can ignore extra fields safely during mixed revisions.
-- Regression coverage now exists in `tests/test_sec.py` for the signed market-change helper, the long-window early-release percentage, the spacer-table principal holder parser, and the new ToC-only principal-holder rejection case.
+- Regression coverage now exists in `tests/test_sec.py` for the signed market-change helper, the long-window early-release percentage, greenshoe disambiguation, early-release and earnings-trigger detection, 8-K amendment detection, cover-page IPO date extraction, the spacer-table principal holder parser, and the ToC-only principal-holder rejection case.
 - Regression coverage now exists in `tests/test_discovery.py` for source-name fallback and nameless-candidate skipping.
 - The refreshed Streamlit screenshot confirms the market `% from IPO` column now uses the correct signed arithmetic.
 - A dedicated `Diagnostics` tab now exposes row-level JSON export and exact computed values for QA without screenshots.
 - Principal-holder table selection is now hardened to skip candidate tables without any numeric cell above 1000 before scoring, which blocks the ALAB table-of-contents false positive.
 - ALAB live validation confirms the principal-holder rows are now real and `early_release_pct` being `null` is correct for that filing.
+- Structured `lockup_conditions` data is stored in snapshots and surfaced as its own panel in the company cards.
+- Market price/volume enrichment is wired through `ipo_tracker/market.py`, `ipo_tracker/sec.py`, `ipo_tracker/db.py`, and `app.py`.
+- Automated IPO discovery is in `ipo_tracker/discovery.py`, uses EFTS as the primary path with RSS fallback, resolves real source/profile names, and falls back from `form_type` to `form` when SEC uses the alternate key.
 - Confidence-based filtering is now in `app.py`, and low-confidence rows are visibly grouped as `Needs review` in the dashboard.
 
 ## Implemented in `main`, Pending Live Validation
-- Automated IPO discovery is in `ipo_tracker/discovery.py` and shown in the Streamlit `Discovery` tab.
-- Discovery uses EFTS as the primary path with RSS fallback and IPO-vs-secondary filtering.
-- Discovery entity resolution now prefers real source/profile names and skips nameless candidates instead of emitting `CIK ####` rows.
-- Discovery form values now fall back from `form_type` to `form` so the UI can show a non-blank form when SEC returns the alternate key.
-- Structured `lockup_conditions` data is now stored in snapshots and surfaced as its own panel in the company cards.
-- Market price/volume enrichment is now wired through `ipo_tracker/market.py`, `ipo_tracker/sec.py`, `ipo_tracker/db.py`, and `app.py`.
-- ALAB should still be rechecked after any future parsing changes, but the `early_release_pct` question is not a current bug.
+- No open items right now. The latest visual pass did not surface problems in discovery, the lock-up conditions panel, market enrichment, or the confidence-filtered dashboard split.
 
 ## Needs Regression Tests
-- Add parser tests for greenshoe disambiguation.
-- Add parser tests for early-release and earnings-trigger detection.
-- Add parser tests for 8-K amendment detection.
-- Add parser tests for cover-page IPO date extraction.
-- Discovery identity/form fallback tests are now covered in `tests/test_discovery.py`.
+- No open SEC parser or discovery regression gaps are on the board right now.
 
 ## Next Up
 - Add Form 4 insider tracking after unlock.
@@ -48,3 +41,4 @@
 - The repo is connected to GitHub live and I can read and update files on `main`.
 - `main` is the branch to keep using for the project.
 - Streamlit Cloud deployment is already working.
+- I was not able to execute the local test suite from this session because the local shell/runtime bridge is unavailable here, so the new coverage is committed but not locally run by me in this turn.
