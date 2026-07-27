@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from functools import lru_cache
 from html import unescape
 from io import StringIO
 from typing import Any
@@ -18,8 +19,9 @@ SEC_BASE_HEADERS = {
     "Accept-Encoding": "gzip, deflate",
     "Accept": "application/json,text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
-
+SUBMISSIONS_BASE_URL = "https://data.sec.gov/submissions/"
 IPO_FORMS = {"424B4", "424B1", "424B3", "S-1", "S-1/A", "F-1", "F-1/A"}
+EARNINGS_RELEASE_FORMS = {"8-K", "8-K/A", "10-Q", "10-Q/A", "10-K", "10-K/A"}
 
 # ── Fix 1 ──────────────────────────────────────────────────────────────────────
 # "underwriting" removed from this list.  It will never be used as a lockup
@@ -81,13 +83,14 @@ _EARNINGS_KEYWORD_RE = re.compile(
     re.I,
 )
 _TRADING_DAY_RE = re.compile(
-    r"(trading day|trading date|second trading)",
+    r"(trading day|trading date|second|third) trading day",
     re.I,
 )
 _PERCENT_EARLY_RELEASE_RE = re.compile(
     r"(\d{1,3})%\s+of\s+(?:eligible\s+)?(?:securities|shares)",
     re.I,
 )
+_QUARTER_END_RE = re.compile(r"quarter ending ([A-Z][a-z]+\s+\d{1,2},\s+\d{4})", re.I)
 
 
 @dataclass(slots=True)
@@ -110,6 +113,11 @@ class LockupConditions:
     early_release_pct: int | None = None
     amendment_date: str | None = None
     amendment_url: str | None = None
+    earnings_release_quarter_end: str | None = None
+    earnings_release_date: str | None = None
+    earnings_release_url: str | None = None
+    effective_unlock_date: str | None = None
+    effective_unlock_source: str | None = None
 
     def notes_summary(self) -> str:
         parts = [f"Lock-up: {self.lockup_days} days ({self.lockup_source})"]
@@ -121,6 +129,10 @@ class LockupConditions:
             parts.append(f"Early release clause detected{pct}: {desc}")
         if self.has_earnings_trigger:
             parts.append("Earnings-linked trigger present — actual unlock may precede calendar date")
+        if self.effective_unlock_date and self.effective_unlock_source:
+            parts.append(
+                f"Effective unlock date: {self.effective_unlock_date} ({self.effective_unlock_source})"
+            )
         return " | ".join(parts)
 
 
@@ -159,18 +171,145 @@ def filing_document_url(cik: int | str, accession_number: str, primary_document:
     )
 
 
-def find_latest_ipo_filing(cik: int | str) -> FilingReference | None:
-    submissions = fetch_json(submissions_url(cik))
-    recent = submissions.get("filings", {}).get("recent", {})
-    forms = recent.get("form", [])
-    accession_numbers = recent.get("accessionNumber", [])
-    primary_documents = recent.get("primaryDocument", [])
-    filing_dates = recent.get("filingDate", [])
+def _submission_fragment_url(name: str) -> str:
+    if name.startswith("http://") or name.startswith("https://"):
+        return name
+    return f"{SUBMISSIONS_BASE_URL}{name.lstrip('/')}"
 
-    for form, accession_number, primary_document, filing_date in zip(
-        forms, accession_numbers, primary_documents, filing_dates
+
+def _parse_iso_date(value: str | None) -> date | None:
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+@lru_cache(maxsize=256)
+def _fetch_company_submissions_cached(normalized_cik: str) -> dict[str, Any]:
+    return fetch_json(submissions_url(normalized_cik))
+
+
+@lru_cache(maxsize=512)
+def _fetch_submission_fragment_cached(name: str) -> dict[str, Any]:
+    return fetch_json(_submission_fragment_url(name))
+
+
+def load_company_submissions(cik: int | str) -> dict[str, Any]:
+    return _fetch_company_submissions_cached(normalize_cik(cik))
+
+
+def _recent_filing_values(container: dict[str, Any], key: str) -> list[str]:
+    values = container.get(key, [])
+    return values if isinstance(values, list) else []
+
+
+def _filing_records_from_container(container: dict[str, Any]) -> list[dict[str, str]]:
+    forms = _recent_filing_values(container, "form")
+    accession_numbers = _recent_filing_values(container, "accessionNumber")
+    primary_documents = _recent_filing_values(container, "primaryDocument")
+    filing_dates = _recent_filing_values(container, "filingDate")
+    return [
+        {
+            "form": form,
+            "accession_number": accession_number,
+            "primary_document": primary_document,
+            "filing_date": filing_date,
+        }
+        for form, accession_number, primary_document, filing_date in zip(
+            forms,
+            accession_numbers,
+            primary_documents,
+            filing_dates,
+        )
+    ]
+
+
+def _dedupe_submission_records(records: list[dict[str, str]]) -> list[dict[str, str]]:
+    deduped: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for record in sorted(
+        records,
+        key=lambda item: (item.get("filing_date", ""), item.get("accession_number", "")),
+        reverse=True,
     ):
+        key = (record.get("accession_number", ""), record.get("primary_document", ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(record)
+    return deduped
+
+
+def _oldest_covered_date(records: list[dict[str, str]]) -> date | None:
+    filing_dates = [_parse_iso_date(record.get("filing_date")) for record in records]
+    valid_dates = [filing_date for filing_date in filing_dates if filing_date is not None]
+    return min(valid_dates) if valid_dates else None
+
+
+def iter_submission_records(cik: int | str, *, oldest_needed_date: date | None = None) -> list[dict[str, str]]:
+    submissions = load_company_submissions(cik)
+    records = _filing_records_from_container(submissions.get("filings", {}).get("recent", {}))
+    records = _dedupe_submission_records(records)
+    oldest_covered = _oldest_covered_date(records)
+
+    if oldest_needed_date is None:
+        return records
+    if oldest_covered is not None and oldest_covered <= oldest_needed_date:
+        return records
+
+    archive_files = sorted(
+        submissions.get("filings", {}).get("files", []),
+        key=lambda item: item.get("filingTo", ""),
+        reverse=True,
+    )
+    for file_info in archive_files:
+        name = file_info.get("name")
+        if not name:
+            continue
+        try:
+            fragment = _fetch_submission_fragment_cached(name)
+        except requests.RequestException:
+            continue
+        if isinstance(fragment, dict) and "filings" in fragment:
+            records.extend(_filing_records_from_container(fragment.get("filings", {}).get("recent", {})))
+        elif isinstance(fragment, dict):
+            records.extend(_filing_records_from_container(fragment))
+        records = _dedupe_submission_records(records)
+        oldest_covered = _oldest_covered_date(records)
+        fragment_from = _parse_iso_date(file_info.get("filingFrom"))
+        if fragment_from is not None and fragment_from <= oldest_needed_date:
+            break
+        if oldest_covered is not None and oldest_covered <= oldest_needed_date:
+            break
+
+    return records
+
+
+def _format_long_date(value: date) -> str:
+    return value.strftime("%B %d, %Y").replace(" 0", " ")
+
+
+def add_trading_days(start_date: date, trading_days: int) -> date:
+    current = start_date
+    added = 0
+    while added < trading_days:
+        current += timedelta(days=1)
+        if current.weekday() < 5:
+            added += 1
+    return current
+
+
+def find_latest_ipo_filing(cik: int | str, *, oldest_needed_date: date | None = None) -> FilingReference | None:
+    for record in iter_submission_records(cik, oldest_needed_date=oldest_needed_date):
+        form = record.get("form")
+        accession_number = record.get("accession_number")
+        primary_document = record.get("primary_document")
+        filing_date = record.get("filing_date")
         if form not in IPO_FORMS:
+            continue
+        if not accession_number or not primary_document or not filing_date:
             continue
         filing_url = filing_document_url(cik, accession_number, primary_document)
         return FilingReference(
@@ -194,38 +333,33 @@ def find_lockup_amendment_8k(
 
     Returns (filing_date, filing_url, relevant_excerpt) or (None, None, None).
     """
-    try:
-        submissions = fetch_json(submissions_url(cik))
-    except requests.RequestException:
-        return None, None, None
-
-    recent = submissions.get("filings", {}).get("recent", {})
-    forms = recent.get("form", [])
-    accession_numbers = recent.get("accessionNumber", [])
-    primary_documents = recent.get("primaryDocument", [])
-    filing_dates = recent.get("filingDate", [])
     cutoff = ipo_date + timedelta(days=210)
 
-    for form, acc, doc, fdate in zip(forms, accession_numbers, primary_documents, filing_dates):
+    for record in iter_submission_records(cik, oldest_needed_date=ipo_date):
+        form = record.get("form")
+        accession_number = record.get("accession_number")
+        primary_document = record.get("primary_document")
+        filing_date = _parse_iso_date(record.get("filing_date"))
         if form not in {"8-K", "8-K/A"}:
             continue
-        try:
-            filing_dt = date.fromisoformat(fdate)
-        except ValueError:
+        if filing_date is None or not (ipo_date <= filing_date <= cutoff):
             continue
-        if not (ipo_date <= filing_dt <= cutoff):
+        if not accession_number or not primary_document:
             continue
-        url = filing_document_url(cik, acc, doc)
+
+        url = filing_document_url(cik, accession_number, primary_document)
         try:
             html = fetch_text(url)
         except requests.RequestException:
             continue
         text = _strip_html(html)
         if _LOCKUP_AMENDMENT_RE.search(text):
-            m = _LOCKUP_AMENDMENT_RE.search(text)
-            start = max(0, m.start() - 50)
+            match = _LOCKUP_AMENDMENT_RE.search(text)
+            if match is None:
+                continue
+            start = max(0, match.start() - 50)
             excerpt = text[start : start + 400].strip()
-            return fdate, url, excerpt
+            return filing_date.isoformat(), url, excerpt
 
     return None, None, None
 
@@ -277,18 +411,17 @@ def _extract_lockup_days_from_window(
         r"lock[- ]up(?:[^.]{0,300})?(\d{2,3})\s+days",
     ]
     for pattern in patterns:
-        for m in re.finditer(pattern, text, flags=re.I):
-            days = int(m.group(1))
-            if days < 60:
-                if not allow_overallotment:
-                    continue
+        for match in re.finditer(pattern, text, flags=re.I):
+            days = int(match.group(1))
+            if days < 60 and not allow_overallotment:
+                continue
             if not allow_overallotment:
-                context_start = max(0, m.start() - 120)
-                context_end = min(len(text), m.end() + 120)
+                context_start = max(0, match.start() - 120)
+                context_end = min(len(text), match.end() + 120)
                 context = text[context_start:context_end]
                 if _OVERALLOTMENT_RE.search(context):
                     continue
-            return days, f"Regex match: {m.group(0)[:140]}"
+            return days, f"Regex match: {match.group(0)[:140]}"
 
     if re.search(r"one year", text, flags=re.I):
         return 365, "Detected one-year lock-up"
@@ -298,14 +431,25 @@ def _extract_lockup_days_from_window(
 # ── Fix 2 ──────────────────────────────────────────────────────────────────────
 def _has_earnings_trigger(text: str) -> bool:
     """Both 'earnings' and 'trading day' must appear within 400 chars of each other."""
-    for m in _EARNINGS_KEYWORD_RE.finditer(text):
-        window = text[max(0, m.start() - 300): m.end() + 300]
+    for match in _EARNINGS_KEYWORD_RE.finditer(text):
+        window = text[max(0, match.start() - 300): match.end() + 300]
         if _TRADING_DAY_RE.search(window):
             return True
     return False
 
 
-def _detect_early_release(section_text: str) -> tuple[bool, bool, int | None, str]:
+def _extract_earnings_trigger_quarter_end(text: str) -> str | None:
+    match = _QUARTER_END_RE.search(text)
+    if not match:
+        return None
+    try:
+        parsed = datetime.strptime(match.group(1).strip(), "%B %d, %Y").date()
+    except ValueError:
+        return None
+    return parsed.isoformat()
+
+
+def _detect_early_release(section_text: str) -> tuple[bool, bool, int | None, str, str | None]:
     has_early = bool(_EARLY_RELEASE_RE.search(section_text))
     has_earnings = _has_earnings_trigger(section_text)
 
@@ -319,11 +463,13 @@ def _detect_early_release(section_text: str) -> tuple[bool, bool, int | None, st
 
     description = ""
     if has_early:
-        m = _EARLY_RELEASE_RE.search(section_text)
-        start = max(0, m.start() - 20)
-        description = section_text[start : start + 300].strip()
+        match = _EARLY_RELEASE_RE.search(section_text)
+        if match is not None:
+            start = max(0, match.start() - 20)
+            description = section_text[start : start + 300].strip()
 
-    return has_early, has_earnings, pct, description
+    quarter_end = _extract_earnings_trigger_quarter_end(section_text) if has_earnings else None
+    return has_early, has_earnings, pct, description, quarter_end
 
 
 def _parse_spacer_table_row(tr: Any) -> dict[str, Any] | None:
@@ -448,7 +594,7 @@ def extract_lockup_conditions(html_text: str) -> LockupConditions:
             continue
         days, reason = _extract_lockup_days_from_window(section, allow_overallotment=False)
         if days is not None:
-            has_early, has_earnings, pct, desc = _detect_early_release(section)
+            has_early, has_earnings, pct, desc, quarter_end = _detect_early_release(section)
             return LockupConditions(
                 lockup_days=days,
                 lockup_source=f"{heading.title()} section: {reason}",
@@ -456,13 +602,14 @@ def extract_lockup_conditions(html_text: str) -> LockupConditions:
                 has_earnings_trigger=has_earnings,
                 early_release_pct=pct,
                 early_release_description=desc,
+                earnings_release_quarter_end=quarter_end,
             )
 
     section = _find_section_window(text, UNDERWRITING_HEADING)
     if section:
         days, reason = _extract_lockup_days_from_window(section, allow_overallotment=False)
         if days is not None:
-            has_early, has_earnings, pct, desc = _detect_early_release(section)
+            has_early, has_earnings, pct, desc, quarter_end = _detect_early_release(section)
             return LockupConditions(
                 lockup_days=days,
                 lockup_source=f"Underwriting section (guarded): {reason}",
@@ -470,11 +617,12 @@ def extract_lockup_conditions(html_text: str) -> LockupConditions:
                 has_earnings_trigger=has_earnings,
                 early_release_pct=pct,
                 early_release_description=desc,
+                earnings_release_quarter_end=quarter_end,
             )
 
     days, reason = _extract_lockup_days_from_window(text, allow_overallotment=False)
     if days is not None and reason:
-        has_early, has_earnings, pct, desc = _detect_early_release(text[:4000])
+        has_early, has_earnings, pct, desc, quarter_end = _detect_early_release(text[:4000])
         return LockupConditions(
             lockup_days=days,
             lockup_source=f"Full document scan: {reason}",
@@ -482,6 +630,7 @@ def extract_lockup_conditions(html_text: str) -> LockupConditions:
             has_earnings_trigger=has_earnings,
             early_release_pct=pct,
             early_release_description=desc,
+            earnings_release_quarter_end=quarter_end,
         )
 
     return LockupConditions(
@@ -801,6 +950,76 @@ def assess_data_confidence(
     return score, _confidence_label(score), "; ".join(details)
 
 
+def find_earnings_release_filing(
+    cik: int | str,
+    *,
+    quarter_end: date,
+    latest_unlock_date: date,
+) -> tuple[str | None, str | None]:
+    quarter_end_text = _format_long_date(quarter_end).lower()
+    records = sorted(
+        iter_submission_records(cik, oldest_needed_date=quarter_end),
+        key=lambda item: item.get("filing_date", ""),
+    )
+    fallback_result: tuple[str | None, str | None] = (None, None)
+
+    for record in records:
+        form = record.get("form")
+        accession_number = record.get("accession_number")
+        primary_document = record.get("primary_document")
+        filing_date = _parse_iso_date(record.get("filing_date"))
+        if form not in EARNINGS_RELEASE_FORMS:
+            continue
+        if filing_date is None or filing_date < quarter_end or filing_date > latest_unlock_date:
+            continue
+        if not accession_number or not primary_document:
+            continue
+
+        url = filing_document_url(cik, accession_number, primary_document)
+        try:
+            text = _strip_html(fetch_text(url)).lower()
+        except requests.RequestException:
+            continue
+        if not _EARNINGS_KEYWORD_RE.search(text):
+            continue
+        if quarter_end_text in text:
+            return filing_date.isoformat(), url
+        if fallback_result == (None, None):
+            fallback_result = (filing_date.isoformat(), url)
+
+    return fallback_result
+
+
+def determine_effective_unlock_date(
+    cik: int | str,
+    lockup_conditions: LockupConditions,
+    *,
+    calendar_unlock_date: date,
+) -> tuple[date, str | None, str | None, str | None]:
+    if not (lockup_conditions.has_early_release and lockup_conditions.has_earnings_trigger):
+        return calendar_unlock_date, None, None, None
+
+    quarter_end = _parse_iso_date(lockup_conditions.earnings_release_quarter_end)
+    if quarter_end is None:
+        return calendar_unlock_date, None, None, None
+
+    release_date_text, release_url = find_earnings_release_filing(
+        cik,
+        quarter_end=quarter_end,
+        latest_unlock_date=calendar_unlock_date,
+    )
+    release_date = _parse_iso_date(release_date_text)
+    if release_date is None:
+        return calendar_unlock_date, None, None, None
+
+    effective_unlock_date = add_trading_days(release_date, 3)
+    if effective_unlock_date >= calendar_unlock_date:
+        return calendar_unlock_date, release_date.isoformat(), release_url, None
+
+    source = f"Earnings trigger: 3 trading days after earnings release filed {release_date.isoformat()}"
+    return effective_unlock_date, release_date.isoformat(), release_url, source
+
+
 # ── Convenience enrichment helper ─────────────────────────────────────────────
 def enrich_company(company: dict[str, Any]) -> dict[str, Any]:
     """
@@ -812,14 +1031,14 @@ def enrich_company(company: dict[str, Any]) -> dict[str, Any]:
     from .market import fetch_market_data  # local import to avoid circular dependency
 
     cik = company["cik"]
-    ipo_date = company["ipo_date"]
+    seeded_ipo_date = company["ipo_date"]
+    seeded_ipo_dt = date.fromisoformat(seeded_ipo_date)
 
-    filing_ref = find_latest_ipo_filing(cik)
+    filing_ref = find_latest_ipo_filing(cik, oldest_needed_date=seeded_ipo_dt)
     source_url = filing_ref.filing_url if filing_ref else None
     filing_form = filing_ref.form if filing_ref else None
     filing_date = filing_ref.filing_date if filing_ref else None
 
-    # Load the filing HTML if we found a live SEC filing
     html_text = ""
     if source_url:
         try:
@@ -827,24 +1046,26 @@ def enrich_company(company: dict[str, Any]) -> dict[str, Any]:
         except requests.RequestException:
             html_text = ""
 
-    lockup_conditions = extract_lockup_conditions(html_text) if html_text else LockupConditions(DEFAULT_LOCKUP_DAYS, "No filing text available")
+    lockup_conditions = (
+        extract_lockup_conditions(html_text)
+        if html_text
+        else LockupConditions(DEFAULT_LOCKUP_DAYS, "No filing text available")
+    )
     principal_holders = extract_principal_holders(html_text) if html_text else []
 
-    # Prefer the IPO date parsed from the filing text when present.
     parsed_ipo_date = extract_ipo_date_from_text(html_text) if html_text else None
     if not parsed_ipo_date:
-        parsed_ipo_date = ipo_date
+        parsed_ipo_date = seeded_ipo_date
+    parsed_ipo_dt = date.fromisoformat(parsed_ipo_date)
 
-    # Optional post-IPO 8-K amendment check (for lock-up resets / early release)
     amendment_date, amendment_url, amendment_excerpt = (None, None, None)
-    if parsed_ipo_date and cik:
-        try:
-            amendment_date, amendment_url, amendment_excerpt = find_lockup_amendment_8k(
-                cik=cik,
-                ipo_date=date.fromisoformat(parsed_ipo_date),
-            )
-        except Exception:
-            amendment_date, amendment_url, amendment_excerpt = None, None, None
+    try:
+        amendment_date, amendment_url, amendment_excerpt = find_lockup_amendment_8k(
+            cik=cik,
+            ipo_date=parsed_ipo_dt,
+        )
+    except Exception:
+        amendment_date, amendment_url, amendment_excerpt = None, None, None
 
     if amendment_date:
         lockup_conditions.amendment_date = amendment_date
@@ -860,10 +1081,20 @@ def enrich_company(company: dict[str, Any]) -> dict[str, Any]:
     if lockup_conditions.lockup_days <= 0:
         lockup_conditions.lockup_days = DEFAULT_LOCKUP_DAYS
 
-    unlock_date = (date.fromisoformat(parsed_ipo_date) + timedelta(days=lockup_conditions.lockup_days)).isoformat()
+    calendar_unlock_dt = parsed_ipo_dt + timedelta(days=lockup_conditions.lockup_days)
+    effective_unlock_dt, earnings_release_date, earnings_release_url, effective_unlock_source = determine_effective_unlock_date(
+        cik,
+        lockup_conditions,
+        calendar_unlock_date=calendar_unlock_dt,
+    )
+    lockup_conditions.earnings_release_date = earnings_release_date
+    lockup_conditions.earnings_release_url = earnings_release_url
+    lockup_conditions.effective_unlock_date = effective_unlock_dt.isoformat()
+    lockup_conditions.effective_unlock_source = effective_unlock_source
+
     insider_sales: list[dict[str, Any]] = []
-    if date.today() >= date.fromisoformat(unlock_date):
-        insider_sales = fetch_post_unlock_sales(cik, unlock_date)
+    if date.today() >= effective_unlock_dt:
+        insider_sales = fetch_post_unlock_sales(cik, effective_unlock_dt.isoformat())
     insider_sales_summary = summarize_insider_sales(insider_sales)
 
     market = fetch_market_data(company.get("ticker", ""), parsed_ipo_date)
@@ -895,7 +1126,8 @@ def enrich_company(company: dict[str, Any]) -> dict[str, Any]:
         "filing_date": filing_date,
         "source_url": source_url,
         "lockup_days": lockup_conditions.lockup_days,
-        "unlock_date": unlock_date,
+        "unlock_date": calendar_unlock_dt.isoformat(),
+        "effective_unlock_date": effective_unlock_dt.isoformat(),
         "principal_holders": principal_holders,
         "lockup_source": lockup_conditions.lockup_source,
         "lockup_conditions": {
@@ -907,6 +1139,11 @@ def enrich_company(company: dict[str, Any]) -> dict[str, Any]:
             "early_release_pct": lockup_conditions.early_release_pct,
             "amendment_date": lockup_conditions.amendment_date,
             "amendment_url": lockup_conditions.amendment_url,
+            "earnings_release_quarter_end": lockup_conditions.earnings_release_quarter_end,
+            "earnings_release_date": lockup_conditions.earnings_release_date,
+            "earnings_release_url": lockup_conditions.earnings_release_url,
+            "effective_unlock_date": lockup_conditions.effective_unlock_date,
+            "effective_unlock_source": lockup_conditions.effective_unlock_source,
         },
         "insider_sales": insider_sales,
         "ipo_price": market.get("ipo_price"),
