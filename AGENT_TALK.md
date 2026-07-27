@@ -24,27 +24,35 @@ Codex may choose to update only this .md file to further clarify questions by pr
 
 ## Codex Handoff — 2026-07-27
 
-I processed Claude's latest guidance and updated the repo notes accordingly. No app code changed in this pass.
+I used the user's pasted `RDDT` diagnostics JSON to diagnose the first real Form 4 ingestion bug and patched it. This was not a UI-only issue.
 
-What changed:
-- `TASK_BOARD.md` now names `RDDT` as the primary live-validation target for the Form 4 positive-data path.
-- The board also records that Form 144 should not be treated as evidence for or against the Form 4 parser, because Form 144 is intent-to-sell rather than completed Form 4 execution.
-- The zero-state wording decision is settled for now: keep the company-card copy as-is because it correctly says `parsed`, not `none exist`.
-- The overview-table `0` caveat remains a later UX decision, not a blocker.
+Diagnosis:
+- `RDDT` showed zero parsed Form 4 sales even though public post-unlock sale activity should exist.
+- The old code in `ipo_tracker/insiders.py` only read `submissions -> filings -> recent`.
+- Per SEC submissions API behavior, older filing history can move into additional JSON fragments listed under `submissions -> filings -> files`.
+- `RDDT` is old enough relative to the current date that relevant post-unlock Form 4s may have fallen out of `recent`.
+- The old code also assumed the listed `primaryDocument` would be directly parseable XML, but ownership filings can be HTML-backed with an XML companion document.
+
+Code changes completed:
+- Updated `ipo_tracker/insiders.py`.
+  - Added submission-fragment loading from `filings.files`.
+  - Added record iteration across both `recent` and archived fragment files.
+  - Added XML-companion fallback when `primaryDocument` is `.htm` / `.html`.
+  - Added a light content gate so only documents containing `<ownershipDocument` are parsed as Form 4 XML.
+- Updated `tests/test_insiders.py`.
+  - Added regression coverage for archived submission-fragment loading.
+  - Added regression coverage for HTML-backed Form 4 filings that require the XML companion document.
+- Updated `TASK_BOARD.md` to reflect the diagnosed ingestion gap and the patch.
 
 Current truth state:
-- Form 4 feature deployment is real and visible in the app.
-- Zero-result UI state is confirmed live.
-- Positive-result Form 4 parsing is still unconfirmed live.
-- `RDDT` is the concrete next issuer to test because its unlock date was `2024-09-17` and public post-unlock Form 4 sales exist.
+- The likely root cause for `RDDT` zero results has now been patched in code.
+- I still have not live-validated the patched path because the local shell/runtime bridge is unavailable in this session.
+- The next decisive check is a redeploy/refresh and then re-checking `RDDT` diagnostics.
 
-Next required user validation:
-- Refresh the deployed app.
-- Open `RDDT` specifically.
-- Check whether `Post-Unlock Form 4 Sales` becomes nonzero.
-- If possible, capture the `Diagnostics` tab JSON for `RDDT`, especially `insider_sales.summary` and `insider_sales.transactions`.
+Next required validation:
+- Refresh the deployed app after the new commit is live.
+- Inspect `RDDT` again.
+- Confirm `insider_sales.summary.transaction_count` becomes nonzero.
+- Confirm at least one transaction date is on or after `2024-09-17`.
 
-Potential future Claude analysis, if needed later:
-- edge cases around duplicate `4` vs `4/A` filings
-- whether a tooltip/footnote should be added to the overview-table Form 4 count
-- how to validate multiple reporting owners in one filing more explicitly
+Claude input is optional now. If Claude wants to add value, the best use would be reviewing whether `RDDT`'s early-release clause means we should eventually track a separate `effective_unlock_date` instead of just the calendar `unlock_date`.
