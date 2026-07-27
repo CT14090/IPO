@@ -207,6 +207,68 @@ def _lookup_record(lookup: dict[str, Any]) -> dict[str, Any]:
     return {LOOKUP_META_KEY: lookup}
 
 
+def _sale_identity(sale: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        sale.get("source_url"),
+        sale.get("owner_name"),
+        sale.get("transaction_date"),
+        sale.get("shares_sold"),
+        sale.get("price_per_share"),
+        sale.get("ownership_type"),
+    )
+
+
+def _latest_filing_date_for_sales(sales: list[dict[str, Any]]) -> str | None:
+    filing_dates = [
+        sale.get("filing_date") or sale.get("period_of_report") or sale.get("transaction_date")
+        for sale in sales
+        if sale.get("filing_date") or sale.get("period_of_report") or sale.get("transaction_date")
+    ]
+    return max(filing_dates, default=None)
+
+
+def _filter_existing_sales(records: list[dict[str, Any]] | None, unlock_dt: date) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    lookup, sales = split_insider_sales_records(records)
+    filtered_sales: list[dict[str, Any]] = []
+    for sale in sales:
+        transaction_dt = _parse_iso_date(
+            sale.get("transaction_date") or sale.get("period_of_report") or sale.get("filing_date")
+        )
+        if transaction_dt is None or transaction_dt < unlock_dt:
+            continue
+        filtered_sales.append(sale)
+    return lookup, filtered_sales
+
+
+def _entry_matches_known_sales(entry: dict[str, str], known_source_urls: set[str]) -> bool:
+    filing_url = entry.get("filing_url", "").strip().split("#", 1)[0]
+    if not filing_url:
+        return False
+    if filing_url in known_source_urls:
+        return True
+    companion_url = _xml_companion_url(filing_url)
+    return bool(companion_url and companion_url in known_source_urls)
+
+
+def _merge_sales(existing_sales: list[dict[str, Any]], new_sales: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[tuple[Any, ...]] = set()
+    for sale in [*new_sales, *existing_sales]:
+        identity = _sale_identity(sale)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        merged.append(sale)
+    merged.sort(
+        key=lambda item: (
+            item.get("transaction_date") or item.get("filing_date") or "",
+            item.get("owner_name") or "",
+        ),
+        reverse=True,
+    )
+    return merged
+
+
 def _fetch_sales_for_entry(entry: dict[str, str], unlock_dt: date) -> tuple[list[dict[str, Any]], int, int]:
     xml_text = ""
     source_url = None
@@ -325,7 +387,12 @@ def parse_form4_sales(
     return sales
 
 
-def fetch_post_unlock_sales(cik: int | str, unlock_date: str | None) -> list[dict[str, Any]]:
+def fetch_post_unlock_sales(
+    cik: int | str,
+    unlock_date: str | None,
+    *,
+    existing_records: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     unlock_dt = _parse_iso_date(unlock_date)
     normalized_cik = _normalize_cik(cik)
     feed_url = OWNER_INCLUDE_FORM4_FEED.format(cik=normalized_cik, count=OWNER_INCLUDE_FORM4_COUNT)
@@ -341,18 +408,27 @@ def fetch_post_unlock_sales(cik: int | str, unlock_date: str | None) -> list[dic
         "xml_documents": 0,
         "transactions_parsed": 0,
         "latest_filing_date": None,
+        "reused_transactions": 0,
+        "reused_filings": 0,
+        "new_transactions_parsed": 0,
     }
     if unlock_dt is None:
         lookup["status"] = "invalid_unlock_date"
         lookup["reason"] = "Unlock date was missing or invalid, so Form 4 lookup did not run."
         return [_lookup_record(lookup)]
 
+    existing_lookup, reusable_sales = _filter_existing_sales(existing_records, unlock_dt)
+    latest_known_filing_date = existing_lookup.get("latest_filing_date") or _latest_filing_date_for_sales(reusable_sales)
+    known_source_urls = {sale.get("source_url") for sale in reusable_sales if sale.get("source_url")}
+    lookup["reused_transactions"] = len(reusable_sales)
+    lookup["reused_filings"] = len(known_source_urls)
+
     try:
         feed_text = _fetch_owner_include_feed(normalized_cik)
     except requests.RequestException as exc:
         lookup["status"] = "feed_error"
         lookup["reason"] = f"Owner-include Form 4 feed request failed: {exc}"
-        return [_lookup_record(lookup)]
+        return [_lookup_record(lookup), *reusable_sales]
 
     feed_entries = _parse_form4_feed_entries(feed_text)
     lookup["feed_entries"] = len(feed_entries)
@@ -360,15 +436,39 @@ def fetch_post_unlock_sales(cik: int | str, unlock_date: str | None) -> list[dic
     candidate_entries: list[dict[str, str]] = []
     for entry in feed_entries:
         form = entry.get("form")
-        filing_dt = _parse_iso_date(entry.get("filing_date"))
+        filing_date_text = entry.get("filing_date") or ""
+        filing_dt = _parse_iso_date(filing_date_text)
         if form not in FORM4_FORMS or filing_dt is None or filing_dt < unlock_dt:
+            continue
+        if latest_known_filing_date and filing_date_text < latest_known_filing_date:
+            break
+        if _entry_matches_known_sales(entry, known_source_urls):
             continue
         candidate_entries.append(entry)
 
     lookup["candidate_filings"] = len(candidate_entries)
-    if candidate_entries:
-        lookup["latest_filing_date"] = max(entry.get("filing_date") or "" for entry in candidate_entries)
+    candidate_dates = [entry.get("filing_date") or "" for entry in candidate_entries if entry.get("filing_date")]
+    all_filing_dates = [value for value in [latest_known_filing_date, *candidate_dates] if value]
+    if all_filing_dates:
+        lookup["latest_filing_date"] = max(all_filing_dates)
+
     if not candidate_entries:
+        if reusable_sales:
+            lookup["status"] = "sales_reused"
+            latest_text = lookup.get("latest_filing_date") or "the latest known filing date"
+            lookup["transactions_parsed"] = len(reusable_sales)
+            lookup["reason"] = (
+                f"No newer post-unlock Form 4 filings were detected beyond {latest_text}; "
+                f"reused {len(reusable_sales)} sale transaction(s) from {len(known_source_urls)} filing(s)."
+            )
+            return [_lookup_record(lookup), *reusable_sales]
+        if latest_known_filing_date:
+            lookup["status"] = "no_new_form4_filings"
+            lookup["reason"] = (
+                f"No newer post-unlock Form 4 filings were detected beyond {latest_known_filing_date}; "
+                "reused the previous zero-sale lookup result."
+            )
+            return [_lookup_record(lookup)]
         lookup["status"] = "no_form4_filings_after_unlock"
         lookup["reason"] = "No Form 4 or 4/A filings on or after the unlock date were listed in the SEC owner=include feed."
         return [_lookup_record(lookup)]
@@ -380,33 +480,40 @@ def fetch_post_unlock_sales(cik: int | str, unlock_date: str | None) -> list[dic
     else:
         results = [_fetch_sales_for_entry(entry, unlock_dt) for entry in candidate_entries]
 
-    sales: list[dict[str, Any]] = []
+    new_sales: list[dict[str, Any]] = []
     for entry_sales, documents_fetched, xml_documents in results:
         lookup["documents_fetched"] += documents_fetched
         lookup["xml_documents"] += xml_documents
-        sales.extend(entry_sales)
+        new_sales.extend(entry_sales)
 
-    sales.sort(
-        key=lambda item: (
-            item.get("transaction_date") or item.get("filing_date") or "",
-            item.get("owner_name") or "",
-        ),
-        reverse=True,
-    )
-    lookup["transactions_parsed"] = len(sales)
-    if sales:
-        lookup["status"] = "sales_parsed"
-        lookup["reason"] = (
-            f"Parsed {len(sales)} post-unlock sale transaction(s) from {lookup['xml_documents']} ownership document(s)."
-        )
-    elif lookup["xml_documents"]:
+    lookup["new_transactions_parsed"] = len(new_sales)
+    merged_sales = _merge_sales(reusable_sales, new_sales)
+    lookup["transactions_parsed"] = len(merged_sales)
+
+    if merged_sales:
+        if new_sales:
+            lookup["status"] = "sales_parsed"
+            lookup["reason"] = (
+                f"Reused {len(reusable_sales)} existing sale transaction(s) and parsed "
+                f"{len(new_sales)} new post-unlock sale transaction(s) from {lookup['xml_documents']} "
+                "ownership document(s)."
+            )
+        else:
+            lookup["status"] = "sales_reused"
+            lookup["reason"] = (
+                f"No additional sale transactions were found in {lookup['xml_documents']} newly fetched ownership document(s); "
+                f"reused {len(reusable_sales)} existing sale transaction(s)."
+            )
+        return [_lookup_record(lookup), *merged_sales]
+
+    if lookup["xml_documents"]:
         lookup["status"] = "no_sale_transactions_after_unlock"
         lookup["reason"] = "Ownership documents were fetched, but no sale-code transactions on or after the unlock date were parsed."
     else:
         lookup["status"] = "filings_found_but_no_ownership_xml"
         lookup["reason"] = "The owner-include feed listed candidate Form 4 filings, but no ownership XML document could be resolved from them."
 
-    return [_lookup_record(lookup), *sales]
+    return [_lookup_record(lookup)]
 
 
 def summarize_insider_sales(sales: list[dict[str, Any]] | None) -> dict[str, Any]:
