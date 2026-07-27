@@ -254,6 +254,131 @@ class InsiderSalesTests(unittest.TestCase):
         self.assertEqual(lookup["candidate_filings"], 0)
         self.assertEqual(sales, [])
 
+    @patch("ipo_tracker.sec.fetch_text")
+    @patch("ipo_tracker.insiders.requests.get")
+    def test_fetch_post_unlock_sales_reuses_existing_sales_when_no_new_filings(self, mock_get, fetch_text_mock) -> None:
+        mock_get.return_value = _feed_response(
+            """
+            <feed xmlns="http://www.w3.org/2005/Atom">
+              <entry>
+                <title>4 - Example Issuer</title>
+                <updated>2024-09-20T18:00:00-04:00</updated>
+                <link rel="alternate" href="https://www.sec.gov/Archives/edgar/data/4444444/000111111124000444/reused.xml" />
+              </entry>
+            </feed>
+            """
+        )
+        existing_records = [
+            {
+                "_lookup": {
+                    "status": "sales_parsed",
+                    "unlock_date": "2024-09-15",
+                    "latest_filing_date": "2024-09-20",
+                }
+            },
+            {
+                "owner_name": "Existing Insider",
+                "transaction_date": "2024-09-19",
+                "shares_sold": 11_000,
+                "price_per_share": 32.5,
+                "ownership_type": "D",
+                "filing_date": "2024-09-20",
+                "period_of_report": "2024-09-20",
+                "form": "4",
+                "source_url": "https://www.sec.gov/Archives/edgar/data/4444444/000111111124000444/reused.xml",
+            },
+        ]
+
+        records = fetch_post_unlock_sales(
+            4444444,
+            "2024-09-15",
+            existing_records=existing_records,
+        )
+        lookup, sales = split_insider_sales_records(records)
+
+        self.assertEqual(lookup["status"], "sales_reused")
+        self.assertEqual(lookup["candidate_filings"], 0)
+        self.assertEqual(lookup["documents_fetched"], 0)
+        self.assertEqual(lookup["transactions_parsed"], 1)
+        self.assertEqual(lookup["reused_transactions"], 1)
+        self.assertEqual(len(sales), 1)
+        fetch_text_mock.assert_not_called()
+
+    @patch("ipo_tracker.sec.fetch_text")
+    @patch("ipo_tracker.insiders.requests.get")
+    def test_fetch_post_unlock_sales_merges_new_sales_into_existing_history(self, mock_get, fetch_text_mock) -> None:
+        mock_get.return_value = _feed_response(
+            """
+            <feed xmlns="http://www.w3.org/2005/Atom">
+              <entry>
+                <title>4 - Example Issuer</title>
+                <updated>2024-09-21T18:00:00-04:00</updated>
+                <link rel="alternate" href="https://www.sec.gov/Archives/edgar/data/5555555/000111111124000555/new-sale.xml" />
+              </entry>
+              <entry>
+                <title>4 - Example Issuer</title>
+                <updated>2024-09-20T18:00:00-04:00</updated>
+                <link rel="alternate" href="https://www.sec.gov/Archives/edgar/data/5555555/000111111124000554/old-sale.xml" />
+              </entry>
+            </feed>
+            """
+        )
+        fetch_text_mock.return_value = """
+        <ownershipDocument>
+          <periodOfReport>2024-09-21</periodOfReport>
+          <reportingOwner>
+            <reportingOwnerId><rptOwnerName>New Insider</rptOwnerName></reportingOwnerId>
+          </reportingOwner>
+          <nonDerivativeTable>
+            <nonDerivativeTransaction>
+              <transactionDate><value>2024-09-20</value></transactionDate>
+              <transactionCoding><transactionCode>S</transactionCode></transactionCoding>
+              <transactionAmounts>
+                <transactionShares><value>9000</value></transactionShares>
+                <transactionPricePerShare><value>33.10</value></transactionPricePerShare>
+                <transactionAcquiredDisposedCode><value>D</value></transactionAcquiredDisposedCode>
+              </transactionAmounts>
+            </nonDerivativeTransaction>
+          </nonDerivativeTable>
+        </ownershipDocument>
+        """
+        existing_records = [
+            {
+                "_lookup": {
+                    "status": "sales_parsed",
+                    "unlock_date": "2024-09-15",
+                    "latest_filing_date": "2024-09-20",
+                }
+            },
+            {
+                "owner_name": "Existing Insider",
+                "transaction_date": "2024-09-19",
+                "shares_sold": 11_000,
+                "price_per_share": 32.5,
+                "ownership_type": "D",
+                "filing_date": "2024-09-20",
+                "period_of_report": "2024-09-20",
+                "form": "4",
+                "source_url": "https://www.sec.gov/Archives/edgar/data/5555555/000111111124000554/old-sale.xml",
+            },
+        ]
+
+        records = fetch_post_unlock_sales(
+            5555555,
+            "2024-09-15",
+            existing_records=existing_records,
+        )
+        lookup, sales = split_insider_sales_records(records)
+
+        self.assertEqual(lookup["status"], "sales_parsed")
+        self.assertEqual(lookup["candidate_filings"], 1)
+        self.assertEqual(lookup["documents_fetched"], 1)
+        self.assertEqual(lookup["new_transactions_parsed"], 1)
+        self.assertEqual(lookup["transactions_parsed"], 2)
+        self.assertEqual(len(sales), 2)
+        self.assertEqual(sales[0]["owner_name"], "New Insider")
+        self.assertEqual(sales[0]["shares_sold"], 9_000)
+
     def test_summarize_insider_sales_ignores_lookup_metadata(self) -> None:
         summary = summarize_insider_sales(
             [
