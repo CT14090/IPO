@@ -22,7 +22,7 @@ from ipo_tracker.db import (
 )
 from ipo_tracker.discovery import discover_recent_ipo_candidates
 from ipo_tracker.insiders import split_insider_sales_records, summarize_insider_sales
-from ipo_tracker.market import calculate_price_change_pct
+from ipo_tracker.market import calculate_price_change_pct, merge_market_snapshot
 from ipo_tracker.sec import enrich_company
 
 
@@ -210,6 +210,7 @@ def refresh_live_data() -> tuple[list[dict], int, list[str]]:
             )
             rows.append(company)
             continue
+        enriched.update(merge_market_snapshot(company, enriched))
         _persist_snapshot(company["company_id"], enriched)
         enriched["price_change_pct"] = _market_price_change_pct(enriched)
         rows.append({**company, **enriched})
