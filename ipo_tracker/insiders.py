@@ -10,8 +10,6 @@ from xml.etree import ElementTree as ET
 
 import requests
 
-from .sec import fetch_text, normalize_cik, sec_headers
-
 
 ATOM_NS = "{http://www.w3.org/2005/Atom}"
 FORM4_FORMS = {"4", "4/A"}
@@ -23,6 +21,24 @@ OWNER_INCLUDE_FORM4_FEED = (
     "&count={count}&output=atom"
 )
 SALE_TRANSACTION_CODES = {"S"}
+
+
+def _normalize_cik(cik: int | str) -> str:
+    from .sec import normalize_cik
+
+    return normalize_cik(cik)
+
+
+def _sec_headers() -> dict[str, str]:
+    from .sec import sec_headers
+
+    return sec_headers()
+
+
+def _fetch_sec_text(url: str) -> str:
+    from .sec import fetch_text
+
+    return fetch_text(url)
 
 
 def _strip_namespaces(root: ET.Element) -> None:
@@ -92,7 +108,7 @@ def _extract_form_from_entry(title: str, summary: str) -> str:
 @lru_cache(maxsize=256)
 def _fetch_owner_include_feed(normalized_cik: str) -> str:
     url = OWNER_INCLUDE_FORM4_FEED.format(cik=normalized_cik, count=OWNER_INCLUDE_FORM4_COUNT)
-    response = requests.get(url, headers=sec_headers(), timeout=30)
+    response = requests.get(url, headers=_sec_headers(), timeout=30)
     response.raise_for_status()
     return response.text
 
@@ -164,7 +180,7 @@ def _candidate_document_urls_from_filing_url(filing_url: str) -> list[str]:
 
     if is_detail_page or not candidates:
         try:
-            detail_text = fetch_text(normalized)
+            detail_text = _fetch_sec_text(normalized)
         except requests.RequestException:
             detail_text = ""
         if detail_text:
@@ -274,7 +290,7 @@ def parse_form4_sales(
 
 def fetch_post_unlock_sales(cik: int | str, unlock_date: str | None) -> list[dict[str, Any]]:
     unlock_dt = _parse_iso_date(unlock_date)
-    normalized_cik = normalize_cik(cik)
+    normalized_cik = _normalize_cik(cik)
     feed_url = OWNER_INCLUDE_FORM4_FEED.format(cik=normalized_cik, count=OWNER_INCLUDE_FORM4_COUNT)
     lookup: dict[str, Any] = {
         "source": "SEC browse-edgar owner=include Atom",
@@ -326,7 +342,7 @@ def fetch_post_unlock_sales(cik: int | str, unlock_date: str | None) -> list[dic
         source_url = None
         for candidate_url in _candidate_document_urls_from_filing_url(entry.get("filing_url", "")):
             try:
-                candidate_text = fetch_text(candidate_url)
+                candidate_text = _fetch_sec_text(candidate_url)
             except requests.RequestException:
                 continue
             lookup["documents_fetched"] += 1
