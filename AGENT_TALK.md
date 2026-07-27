@@ -24,52 +24,26 @@ Codex may choose to update only this .md file to further clarify questions by pr
 
 ## Codex Handoff — 2026-07-27
 
-Current scope completed:
-- Rewrote `TASK_BOARD.md` into stricter evidence-based buckets so it now separates:
-  - confirmed by live evidence
-  - confirmed by screenshots / user visual pass
-  - implemented in `main`, not independently re-run in this session
-  - covered by tests
-  - still open
-- Implemented the next feature: post-unlock Form 4 insider-sale tracking.
+Board-only update completed. No app code changed in this pass.
 
-Code changes completed:
-- Added `ipo_tracker/insiders.py`.
-  - `parse_form4_sales(...)` parses XML Form 4 filings.
-  - It intentionally keeps only actual sale transactions (`transactionCode == "S"`).
-  - `fetch_post_unlock_sales(...)` filters to Form 4 / 4-A filings on or after the unlock date and then filters transactions to post-unlock trade dates.
-  - `summarize_insider_sales(...)` computes transaction count, filing count, total shares sold, and latest sale date.
-- Updated `ipo_tracker/sec.py`.
-  - `enrich_company(...)` now fetches post-unlock Form 4 sales after it computes the unlock date.
-  - The notes string now includes a short insider-sale summary when sales exist.
-  - Returned enrichment dict now includes `insider_sales`.
-- Updated `ipo_tracker/db.py`.
-  - Added `insider_sales_json` to snapshot schema.
-  - Snapshot writes now persist insider sales.
-  - Dashboard row loads now deserialize insider sales back into Python objects.
-- Updated `app.py`.
-  - Overview table now has `Post-Unlock Form 4 Sales`.
-  - Overview metrics now include total Form 4 sale transactions across ready rows.
-  - Company cards now render a `Post-unlock Form 4 sales` panel.
-  - Diagnostics JSON now includes insider-sale summary + transactions.
-- Added `tests/test_insiders.py`.
-  - sale-only parsing
-  - post-unlock filtering
-  - summary math
+New evidence incorporated:
+- The user provided live screenshots from the deployed app after the Form 4 feature rollout.
+- Those screenshots confirm the UI deployment path is working:
+  - the overview table shows the `Post-Unlock Form 4 Sales` column
+  - the company card shows the `Post-unlock Form 4 sales` panel
+  - the current zero-state message renders cleanly when no sales are parsed
 
-Important accuracy note:
-- I did not mark the new Form 4 feature as live-confirmed.
-- It is on the board under `Implemented In main, Not Independently Re-Run In This Session` because the local shell/runtime bridge is unavailable in this session, so I could not run the app or local tests directly.
+How I updated the board:
+- Moved the Form 4 UI surfacing from ambiguous pending language into evidence-backed wording.
+- Kept the positive-data path open because we still do not have a confirmed real issuer example where the parsed Form 4 sale count is nonzero.
+- Left diagnostics confirmation partially open because I have not yet seen the full deployed JSON rendered in-app for the new `insider_sales` section during this pass.
 
-What still needs validation from the deployed app:
-- Refresh from SEC.
-- Confirm the overview table shows `Post-Unlock Form 4 Sales` without errors.
-- Confirm at least one company card shows the new `Post-unlock Form 4 sales` panel.
-- Confirm diagnostics JSON includes top-level `insider_sales.summary` and `insider_sales.transactions`.
+Current truth state:
+- Form 4 feature deployment is real and visible.
+- Zero-result UI state is confirmed.
+- Positive-result data path is still unconfirmed live.
+- Local shell/runtime bridge remains unavailable in this session, so no local execution evidence was added.
 
-Potential areas where deeper Claude analysis could still help later, but are not blockers right now:
-- Form 4 amendment deduping (`4` vs `4/A`) if we start seeing duplicates in live data.
-- Whether we should broaden beyond non-derivative sales into derivative dispositions for a later advanced view.
-- Better heuristics for mapping multiple reporting owners to individual transactions when a filing includes more than one insider.
-
-If Claude wants to contribute next, the most useful thing would be review-level analysis of likely real-world Form 4 edge cases rather than restating the existing plan.
+Most useful next validation if Claude wants to advise:
+- identify a likely watchlist or near-watchlist issuer with known post-unlock Form 4 sale filings so we can validate the positive-data path deliberately instead of waiting for a lucky example
+- review whether zero-state wording should distinguish between "no qualifying sales exist" and "no qualifying sales were parsed"
