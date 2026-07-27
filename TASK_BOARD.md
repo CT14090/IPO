@@ -34,7 +34,8 @@
 - `tests/test_insiders.py` covers Form 4 sale-only parsing, post-unlock filtering, and insider-sale summary math.
 
 ## Still Open
-- Confirm the Form 4 positive-data path against a real issuer with post-unlock sale filings.
+- Confirm the Form 4 positive-data path against a real issuer with post-unlock sale filings. `RDDT` is now the primary validation target because its unlock date of `2024-09-17` is in the past and public Form 4 sale activity exists.
+- Decide later whether the overview-table `0` should gain a tooltip or footnote clarifying that the value means `parsed count`, not `confirmed none exist`.
 - Improve per-holder lock-up term parsing.
 - Compute shares outstanding versus locked percentage.
 - Monitor resale registrations such as S-3 and S-8 filings.
@@ -44,7 +45,9 @@
 
 ## Live Validation Checklist
 - Confirm the `Diagnostics` tab includes an `insider_sales` section with both `summary` and `transactions`.
-- Validate one issuer where post-unlock Form 4 sales should be nonzero, so the positive-data path is confirmed rather than only the zero-state UI.
+- Refresh the deployed app and inspect `RDDT` specifically.
+- Confirm `RDDT` shows a nonzero parsed Form 4 sale count and at least one transaction dated on or after `2024-09-17`.
+- Ignore Form 144-only evidence when judging this feature, because Form 144 is intent-to-sell, not completed Form 4 sale execution.
 
 ## Notes
 - The repo is connected to GitHub live and I can read and update files on `main`.
