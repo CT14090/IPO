@@ -11,6 +11,7 @@
 - Principal-holder table selection now skips false-positive tables without real numeric values, and ALAB live validation confirmed that real holder rows replaced the old table-of-contents match.
 - `early_release_pct = null` for ALAB is now understood to be a correct filing outcome, not a parser failure.
 - A dedicated `Diagnostics` tab now exposes row-level JSON export and exact computed values for QA.
+- The Form 4 feature is now visibly deployed: the overview table shows a `Post-Unlock Form 4 Sales` column, and company cards show a `Post-unlock Form 4 sales` panel without crashing.
 
 ## Confirmed By Screenshots Or User Visual Pass
 - The market `% from IPO` column now uses the correct signed arithmetic.
@@ -19,14 +20,13 @@
 - Automated IPO discovery is visible in the dashboard and uses EFTS as the primary path with RSS fallback.
 - Confidence-based filtering is visible, and lower-confidence rows move into the `Needs review` bucket.
 - The current UI layout for overview, company cards, discovery, and diagnostics has not surfaced visual issues in the latest user pass.
+- The current Form 4 UI state is visually correct for a zero-result case: the table shows `0`, and the card explains that no post-unlock Form 4 sale transactions were parsed yet.
 
 ## Implemented In `main`, Not Independently Re-Run In This Session
 - Post-unlock Form 4 insider-sale tracking is now wired through `ipo_tracker/insiders.py`, `ipo_tracker/sec.py`, `ipo_tracker/db.py`, and `app.py`.
 - Refreshes now persist `insider_sales_json` into snapshots so the Form 4 data survives reloads.
-- The overview table now includes a `Post-Unlock Form 4 Sales` column.
-- Company cards now include a `Post-unlock Form 4 sales` panel with transaction count, filing count, shares sold, latest sale date, and a link to the latest Form 4 when present.
 - Diagnostics JSON now includes both an insider-sales summary and the parsed transaction list.
-- Because I could not execute the local app or tests from this session, this feature still needs live validation after deployment refresh.
+- Because I could not execute the local app or tests from this session, the positive-data path for Form 4 still needs confirmation on a company that actually has qualifying post-unlock sales.
 
 ## Covered By Tests
 - `tests/test_sec.py` covers lock-up extraction, fallback behavior, long-window early-release percent parsing, greenshoe disambiguation, early-release and earnings-trigger detection, 8-K amendment detection, cover-page IPO date extraction, holder parsing, and confidence scoring.
@@ -34,6 +34,7 @@
 - `tests/test_insiders.py` covers Form 4 sale-only parsing, post-unlock filtering, and insider-sale summary math.
 
 ## Still Open
+- Confirm the Form 4 positive-data path against a real issuer with post-unlock sale filings.
 - Improve per-holder lock-up term parsing.
 - Compute shares outstanding versus locked percentage.
 - Monitor resale registrations such as S-3 and S-8 filings.
@@ -42,11 +43,8 @@
 - Add market-impact context around unlock dates.
 
 ## Live Validation Checklist
-- Refresh from SEC on the deployed app.
-- Open a company whose unlock date is already in the past.
-- Confirm the overview table shows a nonzero or zero `Post-Unlock Form 4 Sales` count without errors.
-- Confirm the company card shows the new `Post-unlock Form 4 sales` panel.
 - Confirm the `Diagnostics` tab includes an `insider_sales` section with both `summary` and `transactions`.
+- Validate one issuer where post-unlock Form 4 sales should be nonzero, so the positive-data path is confirmed rather than only the zero-state UI.
 
 ## Notes
 - The repo is connected to GitHub live and I can read and update files on `main`.
