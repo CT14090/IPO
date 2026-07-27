@@ -91,6 +91,7 @@ def initialize_database() -> None:
                 principal_holders_json TEXT NOT NULL,
                 lockup_source TEXT NOT NULL,
                 lockup_conditions_json TEXT NOT NULL DEFAULT '{}',
+                insider_sales_json TEXT NOT NULL DEFAULT '[]',
                 ipo_price REAL,
                 current_price REAL,
                 price_change_pct REAL,
@@ -121,6 +122,7 @@ def initialize_database() -> None:
             """
         )
         _ensure_column(conn, "company_snapshots", "lockup_conditions_json", "TEXT NOT NULL DEFAULT '{}'" )
+        _ensure_column(conn, "company_snapshots", "insider_sales_json", "TEXT NOT NULL DEFAULT '[]'")
         _ensure_column(conn, "company_snapshots", "ipo_price", "REAL")
         _ensure_column(conn, "company_snapshots", "current_price", "REAL")
         _ensure_column(conn, "company_snapshots", "price_change_pct", "REAL")
@@ -183,6 +185,7 @@ def upsert_snapshot(
     principal_holders: Sequence[dict] | None,
     lockup_source: str,
     lockup_conditions: dict | None,
+    insider_sales: Sequence[dict] | None,
     ipo_price: float | None,
     current_price: float | None,
     price_change_pct: float | None,
@@ -201,10 +204,11 @@ def upsert_snapshot(
             INSERT INTO company_snapshots (
                 company_id, filing_form, filing_date, source_url, lockup_days,
                 unlock_date, principal_holders_json, lockup_source, lockup_conditions_json,
-                ipo_price, current_price, price_change_pct, avg_volume_30d, market_cap,
-                market_data_note, confidence_score, confidence_label, confidence_details, notes
+                insider_sales_json, ipo_price, current_price, price_change_pct, avg_volume_30d,
+                market_cap, market_data_note, confidence_score, confidence_label,
+                confidence_details, notes
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 company_id,
@@ -216,6 +220,7 @@ def upsert_snapshot(
                 json.dumps(list(principal_holders or []), default=str),
                 lockup_source,
                 json.dumps(lockup_conditions or {}, default=str),
+                json.dumps(list(insider_sales or []), default=str),
                 ipo_price,
                 current_price,
                 price_change_pct,
@@ -269,6 +274,7 @@ def load_dashboard_rows() -> list[dict]:
                 "principal_holders": json.loads(_row_value(snapshot, "principal_holders_json", "[]")),
                 "lockup_source": _row_value(snapshot, "lockup_source", "Seeded watchlist"),
                 "lockup_conditions": json.loads(_row_value(snapshot, "lockup_conditions_json", "{}")),
+                "insider_sales": json.loads(_row_value(snapshot, "insider_sales_json", "[]")),
                 "ipo_price": _float_or_none(_row_value(snapshot, "ipo_price", None)),
                 "current_price": _float_or_none(_row_value(snapshot, "current_price", None)),
                 "price_change_pct": _float_or_none(_row_value(snapshot, "price_change_pct", None)),
