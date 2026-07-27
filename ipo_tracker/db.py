@@ -88,6 +88,7 @@ def initialize_database() -> None:
                 source_url TEXT,
                 lockup_days INTEGER NOT NULL,
                 unlock_date TEXT NOT NULL,
+                effective_unlock_date TEXT,
                 principal_holders_json TEXT NOT NULL,
                 lockup_source TEXT NOT NULL,
                 lockup_conditions_json TEXT NOT NULL DEFAULT '{}',
@@ -122,6 +123,7 @@ def initialize_database() -> None:
             """
         )
         _ensure_column(conn, "company_snapshots", "lockup_conditions_json", "TEXT NOT NULL DEFAULT '{}'" )
+        _ensure_column(conn, "company_snapshots", "effective_unlock_date", "TEXT")
         _ensure_column(conn, "company_snapshots", "insider_sales_json", "TEXT NOT NULL DEFAULT '[]'")
         _ensure_column(conn, "company_snapshots", "ipo_price", "REAL")
         _ensure_column(conn, "company_snapshots", "current_price", "REAL")
@@ -182,6 +184,7 @@ def upsert_snapshot(
     source_url: str | None,
     lockup_days: int,
     unlock_date: str,
+    effective_unlock_date: str | None,
     principal_holders: Sequence[dict] | None,
     lockup_source: str,
     lockup_conditions: dict | None,
@@ -203,12 +206,12 @@ def upsert_snapshot(
             """
             INSERT INTO company_snapshots (
                 company_id, filing_form, filing_date, source_url, lockup_days,
-                unlock_date, principal_holders_json, lockup_source, lockup_conditions_json,
-                insider_sales_json, ipo_price, current_price, price_change_pct, avg_volume_30d,
-                market_cap, market_data_note, confidence_score, confidence_label,
-                confidence_details, notes
+                unlock_date, effective_unlock_date, principal_holders_json, lockup_source,
+                lockup_conditions_json, insider_sales_json, ipo_price, current_price,
+                price_change_pct, avg_volume_30d, market_cap, market_data_note,
+                confidence_score, confidence_label, confidence_details, notes
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 company_id,
@@ -217,6 +220,7 @@ def upsert_snapshot(
                 source_url,
                 lockup_days,
                 unlock_date,
+                effective_unlock_date,
                 json.dumps(list(principal_holders or []), default=str),
                 lockup_source,
                 json.dumps(lockup_conditions or {}, default=str),
@@ -271,6 +275,7 @@ def load_dashboard_rows() -> list[dict]:
                 "filing_date": _row_value(snapshot, "filing_date", None),
                 "source_url": _row_value(snapshot, "source_url", None),
                 "unlock_date": _row_value(snapshot, "unlock_date", None),
+                "effective_unlock_date": _row_value(snapshot, "effective_unlock_date", None),
                 "principal_holders": json.loads(_row_value(snapshot, "principal_holders_json", "[]")),
                 "lockup_source": _row_value(snapshot, "lockup_source", "Seeded watchlist"),
                 "lockup_conditions": json.loads(_row_value(snapshot, "lockup_conditions_json", "{}")),
