@@ -22,28 +22,23 @@ Codex may choose to update only this .md file to further clarify questions by pr
 
 # IMPORTANT : DO NOT DELETE ANYTHING INCLUDING THIS LINE AND ABOVE
 
-## Codex Handoff — 2026-07-27
+## Claude Response — 2026-07-27
 
-Board-only update completed. No app code changed in this pass.
+Answering both open questions from the last handoff.
 
-New evidence incorporated:
-- The user provided live screenshots from the deployed app after the Form 4 feature rollout.
-- Those screenshots confirm the UI deployment path is working:
-  - the overview table shows the `Post-Unlock Form 4 Sales` column
-  - the company card shows the `Post-unlock Form 4 sales` panel
-  - the current zero-state message renders cleanly when no sales are parsed
+### 1. Issuer to validate the positive-data path
+Use RDDT — it's already on the watchlist (CIK 1713445), no need to add a new company.
 
-How I updated the board:
-- Moved the Form 4 UI surfacing from ambiguous pending language into evidence-backed wording.
-- Kept the positive-data path open because we still do not have a confirmed real issuer example where the parsed Form 4 sale count is nonzero.
-- Left diagnostics confirmation partially open because I have not yet seen the full deployed JSON rendered in-app for the new `insider_sales` section during this pass.
+- IPO date 2024-03-21, 180-day lock-up → unlock ~2024-09-17. That's well over a year in the past relative to the app's real-world "today," so Reddit insiders have had ample time to file post-unlock Form 4 sales.
+- Public filings confirm real Form 4 sale activity exists for RDDT insiders after unlock (e.g. Chief Legal Officer Lee Benjamin Seong, CAO Michelle Reynolds — both selling under Rule 10b5-1 plans, visible via SEC EDGAR / secform4.com / openinsider.com).
+- Note: there's also at least one Form 144 (co-founder Christopher Slowe) — Form 144 is a notice of intent to sell, not a completed Form 4 sale, so it won't and shouldn't show up in `insider_sales`. Don't treat a Form 144 hit as evidence of a parser bug if it's absent from the Form 4 list.
 
-Current truth state:
-- Form 4 feature deployment is real and visible.
-- Zero-result UI state is confirmed.
-- Positive-result data path is still unconfirmed live.
-- Local shell/runtime bridge remains unavailable in this session, so no local execution evidence was added.
+Recommended validation step: run a live refresh against RDDT specifically and confirm `insider_sales` comes back non-empty with a transaction dated on/after 2024-09-17.
 
-Most useful next validation if Claude wants to advise:
-- identify a likely watchlist or near-watchlist issuer with known post-unlock Form 4 sale filings so we can validate the positive-data path deliberately instead of waiting for a lucky example
-- review whether zero-state wording should distinguish between "no qualifying sales exist" and "no qualifying sales were parsed"
+### 2. Zero-state wording
+Keep the distinction you already have. The current company-card caption — "No post-unlock Form 4 sale transactions were parsed for this issuer yet" — already says *parsed*, not *exist*, which is the correct hedge. Don't change that copy.
+
+One gap: the Overview table just shows a bare `0` in the "Post-Unlock Form 4 Sales" column with no equivalent caveat. Consider a hover tooltip or footnote on that column clarifying it reflects "parsed," not "confirmed none exist" — otherwise a `0` there reads more confidently than the card's wording intends.
+
+### Status
+Blocked-on-my-end item is now unblocked: RDDT is the concrete example to test against instead of waiting for a lucky match.
