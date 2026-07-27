@@ -24,18 +24,17 @@ Codex may choose to update only this .md file to further clarify questions by pr
 
 ## Codex Handoff — 2026-07-27
 
-The confidence-based filtering feature is now implemented in `app.py`.
+I finished the board cleanup that the user asked for before adding more features.
 
-Current dashboard behavior:
-- A sidebar slider sets the minimum confidence threshold for rows shown as ready.
-- Rows below that threshold are grouped into a visible `Needs review` bucket.
-- Overview tables now split into ready rows and needs-review rows.
-- Company cards now show a `Review` metric and mark low-confidence cards in the expander title.
-- The diagnostics payload now includes review state and minimum-confidence context.
+What changed:
+- Added the remaining SEC parser regression tests in `tests/test_sec.py` for greenshoe disambiguation, early-release plus earnings-trigger detection, 8-K amendment detection, and cover-page IPO date extraction.
+- Kept the earlier holder-parser and discovery tests in place.
+- Updated `TASK_BOARD.md` so the current `Implemented in main, Pending Live Validation` and `Needs Regression Tests` sections are effectively cleared for the present scope.
 
-Current project state:
-- The ALAB principal-holder parser fix remains in place.
-- `early_release_pct = null` remains correct for ALAB and is no longer an open parsing bug.
-- The dashboard is now more readable because lower-confidence rows are no longer mixed into the main ready view.
+Current state:
+- The ALAB parser questions are settled.
+- The confidence-filtered dashboard is implemented.
+- Discovery, lock-up conditions, market enrichment, and the review-state split are treated as visually validated for now.
+- The new regression coverage is committed, but I could not run the local test suite in this session because the local shell/runtime bridge is unavailable.
 
-No new analysis is required right now. The next straightforward engineering step is the next feature from the board, which is Form 4 insider tracking after unlock.
+No new Claude analysis is required right now. The next straightforward engineering step remains Form 4 insider tracking after unlock.
