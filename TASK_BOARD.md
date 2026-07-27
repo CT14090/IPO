@@ -32,6 +32,7 @@
 - The dashboard now uses `effective_unlock_date` for status, countdown, and Form 4 filtering while still preserving the calendar unlock date for transparency.
 - The Form 4 source path has now been replaced with the issuer-centric SEC `browse-edgar?...&type=4&owner=include&output=atom` feed instead of relying on issuer `submissions.json` records for ownership filings.
 - Structured Form 4 lookup metadata is now embedded alongside stored insider-sale records, and the company-card / diagnostics surfaces can distinguish between `sales parsed`, `no qualifying filings`, `no sale transactions`, and `feed/doc resolution` problems without a new DB migration.
+- `ipo_tracker/insiders.py` has now also been import-hardened so it no longer pulls `ipo_tracker.sec` at module import time; that change specifically targets the Streamlit startup `ImportError` seen on July 27, 2026.
 - Because I could not execute the local app or tests from this session, the patched positive-data path still needs live confirmation on `RDDT` after redeploy/refresh.
 
 ## Covered By Tests
@@ -42,6 +43,7 @@
 ## Still Open
 - Confirm the patched Form 4 positive-data path against a real issuer with post-unlock sale filings. `RDDT` remains the primary validation target because its earnings-trigger unlock should move earlier than the naive `2024-09-17` calendar date.
 - Confirm that the new `insider_sales.lookup.status` values are enough in practice to explain remaining zero-count cases without needing a DB-level dedicated lookup table.
+- Confirm that the July 27, 2026 Streamlit startup `ImportError` is resolved after the import-hardening change in `ipo_tracker/insiders.py`.
 - Decide later whether the overview-table `0` should gain a tooltip or footnote clarifying that the value means `parsed count`, not `confirmed none exist`.
 - Decide later whether post-unlock insider activity should remain sale-code `S` only or expand to include non-open-market codes such as `F`.
 - Improve per-holder lock-up term parsing.
@@ -52,6 +54,7 @@
 - Add market-impact context around unlock dates.
 
 ## Live Validation Checklist
+- Confirm the app boots cleanly after redeploy / refresh.
 - Confirm the `Diagnostics` tab includes `calendar_unlock_date`, `effective_unlock_date`, and the `insider_sales` section with `lookup`, `summary`, and `transactions`.
 - Refresh the deployed app and inspect `RDDT` specifically.
 - Confirm `RDDT` no longer appears as simply calendar-upcoming if the effective earnings-trigger unlock is earlier.
