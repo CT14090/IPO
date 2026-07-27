@@ -24,58 +24,27 @@ Codex may choose to update only this .md file to further clarify questions by pr
 
 ## Codex Handoff — 2026-07-27
 
-I applied the next Form 4 pass based on the previously chosen best options.
+Follow-up after the user hit a Streamlit startup `ImportError` on `from ipo_tracker.insiders import split_insider_sales_records, summarize_insider_sales`.
 
-What changed:
+What I changed just now:
 - `ipo_tracker/insiders.py`
-  - Switched Form 4 discovery away from issuer `submissions.json` walking and onto the issuer-centric SEC `browse-edgar?...&type=4&owner=include&output=atom` feed.
-  - Added feed parsing, filing-link resolution, archive/detail-page candidate URL handling, and HTML-to-XML companion fallback.
-  - Added structured lookup metadata with statuses like:
-    - `sales_parsed`
-    - `no_form4_filings_after_unlock`
-    - `no_sale_transactions_after_unlock`
-    - `filings_found_but_no_ownership_xml`
-    - `feed_error`
-  - To avoid a schema migration, the lookup metadata is stored as a sentinel record inside the existing `insider_sales` JSON list under `_lookup`.
-  - `summarize_insider_sales(...)` now ignores that sentinel metadata automatically.
-- `app.py`
-  - Added parsing helpers that split stored insider-sale records into:
-    - structured lookup metadata
-    - actual sale transactions
-  - Diagnostics JSON now includes `insider_sales.lookup` explicitly.
-  - The company-card Form 4 panel now shows lookup status / reason and basic counts even when parsed sales remain zero, so a `0` is no longer completely opaque.
-- `tests/test_insiders.py`
-  - Reworked tests around the owner-include Atom feed path.
-  - Added coverage for:
-    - post-unlock filtering using feed entries
-    - direct XML filing links
-    - HTML filing links resolved via XML companion
-    - zero-result lookup metadata
-    - summary logic ignoring the `_lookup` sentinel
+  - Removed top-level imports from `ipo_tracker.sec`.
+  - Replaced them with tiny local helper wrappers (`_normalize_cik`, `_sec_headers`, `_fetch_sec_text`) so `insiders.py` stays lightweight at module import time.
+  - Goal: reduce import-time coupling between `insiders.py` and `sec.py` and avoid opaque deployment-time startup failures.
 
-What did NOT change this pass:
-- No new DB column or schema migration.
-- No change to `ipo_tracker/sec.py` or `ipo_tracker/db.py` was required for this pass because the lookup metadata piggybacks on the existing `insider_sales_json` field.
-- The Option C SEC submissions-history optimization for other filing types remains as implemented previously.
+What did NOT change in behavior:
+- The issuer-centric Form 4 source is still the SEC `browse-edgar?...&type=4&owner=include&output=atom` feed.
+- Lookup metadata sentinel storage under `_lookup` is unchanged.
+- App-side diagnostics / UI logic for Form 4 lookup status is unchanged.
 
-Current state / likely outcome:
-- The repo now uses the better issuer-centric Form 4 discovery source that Claude argued for.
-- The dashboard should now tell us whether `0` means:
-  - no qualifying Form 4 filings after unlock,
-  - filings existed but yielded no sale-code transactions,
-  - feed/doc resolution failed,
-  - or sales were actually parsed.
+Why this likely matters:
+- The failing import line was in `app.py`, but the most likely real problem was an exception during `ipo_tracker.insiders` module initialization.
+- This change makes that module much safer to import on Streamlit startup before any Form 4 work actually runs.
 
-What still needs live validation:
-- Redeploy / refresh the Streamlit app.
-- Inspect `RDDT` specifically in the `Diagnostics` tab and in the company-card Form 4 panel.
-- Confirm that `insider_sales.lookup.status` is now informative.
-- Best-case outcome: `RDDT` shows nonzero parsed post-unlock sales.
-- If `RDDT` still shows zero, the new lookup status should tell us whether the remaining issue is:
-  - no issuer-linked Form 4s in SEC owner feed,
-  - wrong document resolution from the feed links,
-  - or sales existing but not matching our current sale-code parser.
+What needs validation now:
+- Redeploy / refresh the Streamlit app and confirm it starts cleanly again.
+- If the app loads, inspect `RDDT` in Diagnostics as planned.
+- If the startup error persists, the next step is to capture the exact inner import exception from Streamlit logs because the issue is no longer likely to be caused by `insiders` importing `sec` too early.
 
 Most useful next Claude contribution if needed:
-- If live `RDDT` still fails, analyze whether SEC owner-feed entries for Reddit point to filing detail pages whose XML links need a more specific resolver than the current generic href scan.
-- Secondary follow-up only if needed: review whether sale-code scope should stay `S` only or include other codes for this dashboard.
+- Only if the startup error persists after this import-hardening change: reason through any remaining module-level startup hazards in `app.py`, `sec.py`, and `insiders.py` without assuming the redacted Streamlit traceback is telling the whole story.
