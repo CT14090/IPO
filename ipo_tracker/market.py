@@ -42,6 +42,42 @@ def calculate_price_change_pct(ipo_price: Any, current_price: Any) -> float | No
     return round((current - ipo) / ipo * 100, 2)
 
 
+def merge_market_snapshot(previous_snapshot: dict[str, Any], latest_market: dict[str, Any]) -> dict[str, Any]:
+    """
+    Keep the last good market snapshot when a live yfinance refresh fails.
+
+    This prevents a transient Yahoo rate limit from overwriting already-good
+    market data with all-null fields.
+    """
+    if market_data_has_values(latest_market):
+        return latest_market
+
+    note = str(latest_market.get("market_data_note", "")).strip()
+    if not note.startswith("Market data fetch failed:"):
+        return latest_market
+
+    previous_market = {key: previous_snapshot.get(key) for key in MARKET_VALUE_KEYS}
+    if not market_data_has_values(previous_market):
+        return latest_market
+
+    price_change_pct = previous_snapshot.get("price_change_pct")
+    if price_change_pct is None:
+        price_change_pct = calculate_price_change_pct(
+            previous_snapshot.get("ipo_price"),
+            previous_snapshot.get("current_price"),
+        )
+
+    return {
+        "ipo_price": previous_snapshot.get("ipo_price"),
+        "current_price": previous_snapshot.get("current_price"),
+        "price_change_pct": price_change_pct,
+        "avg_volume_30d": previous_snapshot.get("avg_volume_30d"),
+        "market_cap": previous_snapshot.get("market_cap"),
+        "data_source": latest_market.get("data_source", "yfinance"),
+        "market_data_note": f"{note} Reusing previous snapshot market data.",
+    }
+
+
 def fetch_market_data(ticker: str, ipo_date: str) -> dict[str, Any]:
     """
     Fetch price and volume context for a watchlist company using yfinance.
