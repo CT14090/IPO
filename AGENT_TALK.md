@@ -24,45 +24,58 @@ Codex may choose to update only this .md file to further clarify questions by pr
 
 ## Codex Handoff — 2026-07-27
 
-I implemented the combined fix path based on Claude's analysis and the user's preference for lookback Option C.
+I applied the next Form 4 pass based on the previously chosen best options.
 
-What changed in code:
-- `ipo_tracker/sec.py`
-  - Added cached company-submissions loading via `@lru_cache`.
-  - Added a shared SEC submission-record walker with Option C early-exit behavior: fetch archived submission fragments only until enough historical date coverage is reached.
-  - Added earnings-trigger quarter-end parsing from lock-up text.
-  - Added `find_earnings_release_filing(...)` to locate the earliest qualifying earnings release filing before the calendar unlock date.
-  - Added `add_trading_days(...)` and `determine_effective_unlock_date(...)`.
-  - `enrich_company(...)` now computes both:
-    - `unlock_date` = calendar lock-up date
-    - `effective_unlock_date` = earlier earnings-trigger date when confidently resolved
+What changed:
 - `ipo_tracker/insiders.py`
-  - Reused the shared SEC submission walker from `sec.py`.
-  - Form 4 filtering now uses the passed unlock boundary, which is now the corrected effective unlock date when available.
-- `ipo_tracker/db.py`
-  - Added `effective_unlock_date` to snapshot storage / loading.
+  - Switched Form 4 discovery away from issuer `submissions.json` walking and onto the issuer-centric SEC `browse-edgar?...&type=4&owner=include&output=atom` feed.
+  - Added feed parsing, filing-link resolution, archive/detail-page candidate URL handling, and HTML-to-XML companion fallback.
+  - Added structured lookup metadata with statuses like:
+    - `sales_parsed`
+    - `no_form4_filings_after_unlock`
+    - `no_sale_transactions_after_unlock`
+    - `filings_found_but_no_ownership_xml`
+    - `feed_error`
+  - To avoid a schema migration, the lookup metadata is stored as a sentinel record inside the existing `insider_sales` JSON list under `_lookup`.
+  - `summarize_insider_sales(...)` now ignores that sentinel metadata automatically.
 - `app.py`
-  - Dashboard math now uses `effective_unlock_date` for status, countdown, and Form 4 interpretation.
-  - `calendar_unlock_date` is preserved and shown for transparency when it differs.
-  - Diagnostics payload now includes both calendar and effective unlock dates.
-  - Company cards now explain when an earlier earnings-trigger unlock overrides the calendar date.
-- Tests
-  - `tests/test_sec.py` now covers trading-day offset logic and effective unlock date resolution.
-  - `tests/test_insiders.py` was realigned to the shared submission walker and still covers XML companion fallback and post-unlock sale parsing.
+  - Added parsing helpers that split stored insider-sale records into:
+    - structured lookup metadata
+    - actual sale transactions
+  - Diagnostics JSON now includes `insider_sales.lookup` explicitly.
+  - The company-card Form 4 panel now shows lookup status / reason and basic counts even when parsed sales remain zero, so a `0` is no longer completely opaque.
+- `tests/test_insiders.py`
+  - Reworked tests around the owner-include Atom feed path.
+  - Added coverage for:
+    - post-unlock filtering using feed entries
+    - direct XML filing links
+    - HTML filing links resolved via XML companion
+    - zero-result lookup metadata
+    - summary logic ignoring the `_lookup` sentinel
 
-Current diagnosis state:
-- The original zero-count `RDDT` case likely had two causes together:
-  1. submissions-history coverage was too naive / expensive
-  2. the code filtered Form 4s against the wrong date boundary (`2024-09-17` calendar unlock instead of the earlier earnings-trigger unlock)
-- Both are now patched in code.
+What did NOT change this pass:
+- No new DB column or schema migration.
+- No change to `ipo_tracker/sec.py` or `ipo_tracker/db.py` was required for this pass because the lookup metadata piggybacks on the existing `insider_sales_json` field.
+- The Option C SEC submissions-history optimization for other filing types remains as implemented previously.
+
+Current state / likely outcome:
+- The repo now uses the better issuer-centric Form 4 discovery source that Claude argued for.
+- The dashboard should now tell us whether `0` means:
+  - no qualifying Form 4 filings after unlock,
+  - filings existed but yielded no sale-code transactions,
+  - feed/doc resolution failed,
+  - or sales were actually parsed.
 
 What still needs live validation:
-- Refresh the deployed app after this code is live.
-- Inspect `RDDT`.
-- Confirm diagnostics show:
-  - `calendar_unlock_date`
-  - `effective_unlock_date`
-  - non-empty `insider_sales` if the patched path is working as expected
-- Confirm `RDDT` no longer behaves like a simple calendar-upcoming unlock if the effective unlock resolves to an earlier August 2024 date.
+- Redeploy / refresh the Streamlit app.
+- Inspect `RDDT` specifically in the `Diagnostics` tab and in the company-card Form 4 panel.
+- Confirm that `insider_sales.lookup.status` is now informative.
+- Best-case outcome: `RDDT` shows nonzero parsed post-unlock sales.
+- If `RDDT` still shows zero, the new lookup status should tell us whether the remaining issue is:
+  - no issuer-linked Form 4s in SEC owner feed,
+  - wrong document resolution from the feed links,
+  - or sales existing but not matching our current sale-code parser.
 
-Claude analysis is optional now. The most useful next Claude contribution, if needed later, would be reviewing whether `find_earnings_release_filing(...)` should remain broad (`8-K` / `10-Q` / `10-K`) or be narrowed further once we see live `RDDT` results.
+Most useful next Claude contribution if needed:
+- If live `RDDT` still fails, analyze whether SEC owner-feed entries for Reddit point to filing detail pages whose XML links need a more specific resolver than the current generic href scan.
+- Secondary follow-up only if needed: review whether sale-code scope should stay `S` only or include other codes for this dashboard.
