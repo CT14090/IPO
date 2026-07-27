@@ -20,6 +20,7 @@ from ipo_tracker.db import (
     webhook_event_exists,
 )
 from ipo_tracker.discovery import discover_recent_ipo_candidates
+from ipo_tracker.insiders import summarize_insider_sales
 from ipo_tracker.market import calculate_price_change_pct
 from ipo_tracker.sec import enrich_company
 
@@ -68,6 +69,25 @@ def _confidence_score(row: dict) -> int:
         return 0
 
 
+def _insider_sales(row: dict) -> list[dict[str, Any]]:
+    sales = row.get("insider_sales", [])
+    return sales if isinstance(sales, list) else []
+
+
+def _insider_sales_summary(row: dict) -> dict[str, Any]:
+    return summarize_insider_sales(_insider_sales(row))
+
+
+def _has_unlocked_in_real_time(row: dict) -> bool:
+    unlock_date = row.get("unlock_date")
+    if not unlock_date:
+        return False
+    try:
+        return date.fromisoformat(unlock_date) <= date.today()
+    except ValueError:
+        return False
+
+
 def _review_state(row: dict, minimum_confidence: int) -> str:
     return "Needs review" if _confidence_score(row) < minimum_confidence else "Ready"
 
@@ -100,6 +120,7 @@ def _table_rows(rows: list[dict], minimum_confidence: int) -> list[dict[str, Any
             "% From IPO": _format_percent(_market_price_change_pct(row)),
             "30D Avg Volume": _format_integer(row.get("avg_volume_30d")),
             "Market Cap": _format_integer(row.get("market_cap")),
+            "Post-Unlock Form 4 Sales": _insider_sales_summary(row)["transaction_count"],
             "Source": row["lockup_source"],
         }
         for row in rows
@@ -121,6 +142,7 @@ def _persist_snapshot(company_id: int, enriched: dict) -> None:
         "principal_holders": enriched["principal_holders"],
         "lockup_source": enriched["lockup_source"],
         "lockup_conditions": enriched.get("lockup_conditions"),
+        "insider_sales": enriched.get("insider_sales", []),
         "ipo_price": enriched.get("ipo_price"),
         "current_price": enriched.get("current_price"),
         "price_change_pct": price_change_pct,
@@ -352,6 +374,10 @@ def _diagnostics_payload(
             "market_cap": row.get("market_cap"),
             "market_data_note": row.get("market_data_note", ""),
         },
+        "insider_sales": {
+            "summary": _insider_sales_summary(row),
+            "transactions": _insider_sales(row),
+        },
         "confidence": {
             "score": row.get("confidence_score", 0),
             "label": row.get("confidence_label", "Seeded"),
@@ -408,6 +434,47 @@ def render_market_context(row: dict) -> None:
             st.caption(row["market_data_note"])
 
 
+def render_insider_sales(row: dict) -> None:
+    insider_sales = _insider_sales(row)
+    if not insider_sales and not _has_unlocked_in_real_time(row):
+        return
+
+    summary = _insider_sales_summary(row)
+    with st.expander("Post-unlock Form 4 sales", expanded=False):
+        if not insider_sales:
+            st.caption("No post-unlock Form 4 sale transactions were parsed for this issuer yet.")
+            return
+
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Transactions", summary["transaction_count"])
+        col2.metric("Unique filings", summary["filing_count"])
+        col3.metric("Shares sold", _format_integer(summary["total_shares_sold"]))
+        col4.metric("Latest sale date", summary.get("latest_sale_date") or "—")
+
+        latest_url = next((sale.get("source_url") for sale in insider_sales if sale.get("source_url")), None)
+        if latest_url:
+            st.link_button("Open latest Form 4", latest_url)
+
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Owner": sale.get("owner_name") or "Unknown",
+                        "Trade Date": sale.get("transaction_date") or "—",
+                        "Shares Sold": _format_integer(sale.get("shares_sold")),
+                        "Price/Share": _format_currency(sale.get("price_per_share")),
+                        "Owned After": _format_integer(sale.get("shares_owned_following_transaction")),
+                        "Ownership": sale.get("ownership_type") or "—",
+                        "Form": sale.get("form") or "—",
+                    }
+                    for sale in insider_sales
+                ]
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
 def render_company_card(row: dict, minimum_confidence: int) -> None:
     confidence_score = _confidence_score(row)
     confidence_label = row.get("confidence_label", "Seeded")
@@ -436,6 +503,7 @@ def render_company_card(row: dict, minimum_confidence: int) -> None:
                 st.caption(confidence_details)
             render_lockup_conditions(row.get("lockup_conditions", {}))
             render_market_context(row)
+            render_insider_sales(row)
         with right:
             if row["source_url"]:
                 st.link_button("Open SEC filing", row["source_url"])
@@ -582,6 +650,7 @@ upcoming = sum(1 for row in ready_rows if row["days_to_expiration"] > 0)
 due_soon = sum(1 for row in ready_rows if 0 <= row["days_to_expiration"] <= 7)
 expired = sum(1 for row in ready_rows if row["days_to_expiration"] < 0)
 watchlist_sources = len({row["source_url"] for row in ready_rows if row["source_url"]})
+post_unlock_form4_sales = sum(_insider_sales_summary(row)["transaction_count"] for row in ready_rows)
 avg_confidence = round(sum(_confidence_score(row) for row in ready_rows) / max(1, ready_total))
 summary = {
     "total": total,
@@ -591,6 +660,7 @@ summary = {
     "due_soon": due_soon,
     "expired": expired,
     "avg_confidence": avg_confidence,
+    "post_unlock_form4_sales": post_unlock_form4_sales,
 }
 
 alert_rows = [row for row in rows if row["days_to_expiration"] == DEFAULT_ALERT_DAYS]
@@ -605,12 +675,13 @@ else:
 overview_tab, companies_tab, discovery_tab, diagnostics_tab, deployment_tab = st.tabs(["Overview", "Companies", "Discovery", "Diagnostics", "Deployment"])
 
 with overview_tab:
-    metric_cols = st.columns(5)
+    metric_cols = st.columns(6)
     metric_cols[0].metric("Ready IPOs", ready_total)
     metric_cols[1].metric("Upcoming", upcoming)
     metric_cols[2].metric("Due in 7 days", due_soon)
     metric_cols[3].metric("Expired", expired)
     metric_cols[4].metric("Avg confidence", f"{avg_confidence}/100")
+    metric_cols[5].metric("Form 4 sales", post_unlock_form4_sales)
     st.caption(
         f"Showing {ready_total} ready row(s) and {needs_review_total} needs-review row(s) out of {total} watchlist companies. "
         f"{watchlist_sources} ready company record(s) currently have SEC filing links."
