@@ -15,8 +15,8 @@
 - `RDDT` is now live-confirmed end-to-end: effective unlock date resolved to `2024-08-09`, the calendar unlock remains visible as `2024-09-17`, and the diagnostics show `insider_sales.lookup.status = sales_parsed` with real post-unlock Form 4 sales.
 - The July 27, 2026 Streamlit startup `ImportError` is resolved in practice because the app is loading again and returning live diagnostics.
 - The July 27, 2026 per-company refresh failure handling is live-confirmed in the negative case: the app no longer hard-crashes on the refresh path that previously raised SEC `HTTPError`.
-- The incremental Form 4 refresh optimization is now live-confirmed: the user measured the first SEC refresh at about `30s` and the second at under `10s`.
-- The latest `RDDT` diagnostics confirm the repeat-refresh reuse path is active: `reused_transactions = 453`, `reused_filings = 53`, `candidate_filings = 2`, `documents_fetched = 2`, `xml_documents = 1`, and `new_transactions_parsed = 12`.
+- The incremental Form 4 refresh optimization is now strongly live-confirmed: the user measured a cold SEC refresh at about `40s` and the second refresh at about `5s`.
+- The latest `RDDT` diagnostics confirm the repeat-refresh reuse path is active: `reused_transactions = 453`, `reused_filings = 53`, `candidate_filings = 2`, `documents_fetched = 2`, `xml_documents = 2`, and `new_transactions_parsed = 26`.
 
 ## Confirmed By Screenshots Or User Visual Pass
 - The market `% from IPO` column now uses the correct signed arithmetic.
@@ -39,8 +39,7 @@
 - Structured Form 4 lookup metadata is embedded alongside stored insider-sale records, and the company-card / diagnostics surfaces can distinguish between `sales parsed`, `no qualifying filings`, `no sale transactions`, `sales reused`, and `feed/doc resolution` problems without a new DB migration.
 - `ipo_tracker/insiders.py` no longer pulls `ipo_tracker.sec` at module import time; that import-hardening targeted the startup error path.
 - `app.py` handles per-company `requests.RequestException` failures during `Refresh from SEC now`, keeps the previous snapshot for failed companies, and surfaces explicit sidebar warnings instead of crashing the whole app.
-- `ipo_tracker/market.py` and `app.py` now preserve the previous market snapshot when a live Yahoo Finance request fails with a rate-limit style error, instead of intentionally overwriting good values with all-null fields.
-- Because I could not execute the local app or tests from this session, the market-snapshot preservation path still needs fresh user validation after deployment.
+- `ipo_tracker/market.py` and `app.py` now attempt to preserve the previous market snapshot when a live Yahoo Finance request fails with a rate-limit style error, instead of intentionally overwriting good values with all-null fields.
 
 ## Covered By Tests
 - `tests/test_sec.py` covers lock-up extraction, fallback behavior, long-window early-release percent parsing, greenshoe disambiguation, early-release and earnings-trigger detection, 8-K amendment detection, cover-page IPO date extraction, holder parsing, trading-day offsets, effective unlock date resolution, and confidence scoring.
@@ -48,7 +47,7 @@
 - `tests/test_insiders.py` now covers owner-include Form 4 feed parsing, post-unlock filtering, direct XML filing links, HTML-to-XML companion fallback, zero-result lookup metadata, incremental history reuse when there are no new filings, incremental merge behavior when a newer filing appears, and insider-sale summary math that ignores embedded lookup metadata.
 
 ## Still Open
-- Live-validate the new market-snapshot preservation path by confirming that a Yahoo rate-limit refresh keeps the previous `ipo_price`, `current_price`, `% from IPO`, volume, and market cap visible instead of replacing them with `null` / `—`.
+- Debug why the market-snapshot preservation path did not surface in live `RDDT` diagnostics: market fields were still `null` and `market_data_note` did not include the expected reuse message after the July 27, 2026 validation.
 - Decide whether Yahoo rate-limit resilience needs an additional cache or retry/backoff layer beyond snapshot preservation.
 - Decide whether the cold-refresh path still needs another speed pass, even though repeat refreshes are now materially faster.
 - Confirm that the new `insider_sales.lookup.status` values are enough in practice to explain remaining edge cases without needing a DB-level dedicated lookup table.
@@ -67,7 +66,7 @@
 - Confirm the app still does not crash if one SEC request fails and that the sidebar still names the affected ticker.
 - Confirm the `Diagnostics` tab includes `calendar_unlock_date`, `effective_unlock_date`, and the `insider_sales` section with `lookup`, `summary`, and `transactions`.
 - Confirm `RDDT` still shows `effective_unlock_date = 2024-08-09` and live parsed Form 4 sales after the incremental-refresh change.
-- Force or wait for a Yahoo Finance rate-limit scenario and confirm market values stay populated from the prior snapshot while `market_data_note` explains the reuse.
+- Reproduce a Yahoo Finance rate-limit scenario and confirm whether the market note includes the reuse message; if it does not, treat the preservation path as still failing.
 - Ignore Form 144-only evidence when judging the Form 4 feature, because Form 144 is intent-to-sell, not completed Form 4 sale execution.
 
 ## Notes
