@@ -1,44 +1,55 @@
 # IPO Tracker Task Board
 
-## Confirmed Done
+## Confirmed By Live Evidence
 - Confidence score / parse quality is implemented in `ipo_tracker/sec.py`, stored in `ipo_tracker/db.py`, and displayed in `app.py`.
 - Crash fix / schema resilience is implemented; older snapshot rows load safely and missing confidence fields no longer break the app.
 - Streamlit dashboard, deployment docs, and Discord webhook helper are already in place.
-- Greenshoe disambiguation is implemented in `ipo_tracker/sec.py` and is visible in live ALAB validation.
-- Dual-trigger / early release detection is implemented in `ipo_tracker/sec.py` and is visible in live ALAB validation.
-- Post-IPO 8-K monitoring is implemented in `ipo_tracker/sec.py` and is visible in live ALAB validation.
-- IPO date from cover-page parsing is implemented in `ipo_tracker/sec.py` and is visible in live ALAB validation.
-- Refresh-path compatibility is hardened in `ipo_tracker/db.py` so snapshot writes can ignore extra fields safely during mixed revisions.
-- Regression coverage now exists in `tests/test_sec.py` for the signed market-change helper, the long-window early-release percentage, greenshoe disambiguation, early-release and earnings-trigger detection, 8-K amendment detection, cover-page IPO date extraction, the spacer-table principal holder parser, and the ToC-only principal-holder rejection case.
-- Regression coverage now exists in `tests/test_discovery.py` for source-name fallback and nameless-candidate skipping.
-- The refreshed Streamlit screenshot confirms the market `% from IPO` column now uses the correct signed arithmetic.
-- A dedicated `Diagnostics` tab now exposes row-level JSON export and exact computed values for QA without screenshots.
-- Principal-holder table selection is now hardened to skip candidate tables without any numeric cell above 1000 before scoring, which blocks the ALAB table-of-contents false positive.
-- ALAB live validation confirms the principal-holder rows are now real and `early_release_pct` being `null` is correct for that filing.
-- Structured `lockup_conditions` data is stored in snapshots and surfaced as its own panel in the company cards.
-- Market price/volume enrichment is wired through `ipo_tracker/market.py`, `ipo_tracker/sec.py`, `ipo_tracker/db.py`, and `app.py`.
-- Automated IPO discovery is in `ipo_tracker/discovery.py`, uses EFTS as the primary path with RSS fallback, resolves real source/profile names, and falls back from `form_type` to `form` when SEC uses the alternate key.
-- Confidence-based filtering is now in `app.py`, and low-confidence rows are visibly grouped as `Needs review` in the dashboard.
+- Greenshoe disambiguation is implemented in `ipo_tracker/sec.py` and was confirmed on the live ALAB card when the unlock date moved to `2024-09-15`.
+- Dual-trigger / early release detection is implemented in `ipo_tracker/sec.py` and was confirmed on the live ALAB card.
+- Post-IPO 8-K monitoring is implemented in `ipo_tracker/sec.py` and was confirmed on the live ALAB card.
+- IPO date from cover-page parsing is implemented in `ipo_tracker/sec.py` and was confirmed on the live ALAB card.
+- Principal-holder table selection now skips false-positive tables without real numeric values, and ALAB live validation confirmed that real holder rows replaced the old table-of-contents match.
+- `early_release_pct = null` for ALAB is now understood to be a correct filing outcome, not a parser failure.
+- A dedicated `Diagnostics` tab now exposes row-level JSON export and exact computed values for QA.
 
-## Implemented in `main`, Pending Live Validation
-- No open items right now. The latest visual pass did not surface problems in discovery, the lock-up conditions panel, market enrichment, or the confidence-filtered dashboard split.
+## Confirmed By Screenshots Or User Visual Pass
+- The market `% from IPO` column now uses the correct signed arithmetic.
+- Structured `lockup_conditions` data is surfaced as its own panel in the company cards.
+- Market price and volume enrichment is visible in company cards and the overview table.
+- Automated IPO discovery is visible in the dashboard and uses EFTS as the primary path with RSS fallback.
+- Confidence-based filtering is visible, and lower-confidence rows move into the `Needs review` bucket.
+- The current UI layout for overview, company cards, discovery, and diagnostics has not surfaced visual issues in the latest user pass.
 
-## Needs Regression Tests
-- No open SEC parser or discovery regression gaps are on the board right now.
+## Implemented In `main`, Not Independently Re-Run In This Session
+- Post-unlock Form 4 insider-sale tracking is now wired through `ipo_tracker/insiders.py`, `ipo_tracker/sec.py`, `ipo_tracker/db.py`, and `app.py`.
+- Refreshes now persist `insider_sales_json` into snapshots so the Form 4 data survives reloads.
+- The overview table now includes a `Post-Unlock Form 4 Sales` column.
+- Company cards now include a `Post-unlock Form 4 sales` panel with transaction count, filing count, shares sold, latest sale date, and a link to the latest Form 4 when present.
+- Diagnostics JSON now includes both an insider-sales summary and the parsed transaction list.
+- Because I could not execute the local app or tests from this session, this feature still needs live validation after deployment refresh.
 
-## Next Up
-- Add Form 4 insider tracking after unlock.
+## Covered By Tests
+- `tests/test_sec.py` covers lock-up extraction, fallback behavior, long-window early-release percent parsing, greenshoe disambiguation, early-release and earnings-trigger detection, 8-K amendment detection, cover-page IPO date extraction, holder parsing, and confidence scoring.
+- `tests/test_discovery.py` covers source-name fallback and nameless-candidate skipping.
+- `tests/test_insiders.py` covers Form 4 sale-only parsing, post-unlock filtering, and insider-sale summary math.
+
+## Still Open
 - Improve per-holder lock-up term parsing.
 - Compute shares outstanding versus locked percentage.
 - Monitor resale registrations such as S-3 and S-8 filings.
-
-## Later
 - Add stronger automated IPO validation beyond the current discovery heuristics.
 - Add more explicit provenance summaries for parsed, inferred, and unknown fields.
 - Add market-impact context around unlock dates.
+
+## Live Validation Checklist
+- Refresh from SEC on the deployed app.
+- Open a company whose unlock date is already in the past.
+- Confirm the overview table shows a nonzero or zero `Post-Unlock Form 4 Sales` count without errors.
+- Confirm the company card shows the new `Post-unlock Form 4 sales` panel.
+- Confirm the `Diagnostics` tab includes an `insider_sales` section with both `summary` and `transactions`.
 
 ## Notes
 - The repo is connected to GitHub live and I can read and update files on `main`.
 - `main` is the branch to keep using for the project.
 - Streamlit Cloud deployment is already working.
-- I was not able to execute the local test suite from this session because the local shell/runtime bridge is unavailable here, so the new coverage is committed but not locally run by me in this turn.
+- Technical difficulty on my side: the local shell/runtime bridge is unavailable in this session, so I could not run the app or local test suite directly. That is why I am separating live-confirmed items from code-complete items instead of overstating certainty.
