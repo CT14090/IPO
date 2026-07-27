@@ -67,31 +67,29 @@ class InsiderSalesTests(unittest.TestCase):
         self.assertEqual(sales[0]["ownership_type"], "D")
         self.assertEqual(sales[0]["transaction_code"], "S")
 
-    @patch("ipo_tracker.insiders.fetch_text")
-    @patch("ipo_tracker.insiders.fetch_json")
-    def test_fetch_post_unlock_sales_filters_pre_unlock_filings_and_trades(self, fetch_json_mock, fetch_text_mock) -> None:
-        fetch_json_mock.return_value = {
-            "filings": {
-                "recent": {
-                    "form": ["4", "4/A", "10-Q"],
-                    "accessionNumber": [
-                        "0001111111-24-000001",
-                        "0001111111-24-000002",
-                        "0001111111-24-000003",
-                    ],
-                    "primaryDocument": [
-                        "sale-one.xml",
-                        "sale-two.xml",
-                        "quarterly.htm",
-                    ],
-                    "filingDate": [
-                        "2024-09-20",
-                        "2024-09-16",
-                        "2024-09-21",
-                    ],
-                }
-            }
-        }
+    @patch("ipo_tracker.sec.fetch_text")
+    @patch("ipo_tracker.insiders.iter_submission_records")
+    def test_fetch_post_unlock_sales_filters_pre_unlock_filings_and_trades(self, iter_records_mock, fetch_text_mock) -> None:
+        iter_records_mock.return_value = [
+            {
+                "form": "4",
+                "accession_number": "0001111111-24-000001",
+                "primary_document": "sale-one.xml",
+                "filing_date": "2024-09-20",
+            },
+            {
+                "form": "4/A",
+                "accession_number": "0001111111-24-000002",
+                "primary_document": "sale-two.xml",
+                "filing_date": "2024-09-16",
+            },
+            {
+                "form": "10-Q",
+                "accession_number": "0001111111-24-000003",
+                "primary_document": "quarterly.htm",
+                "filing_date": "2024-09-21",
+            },
+        ]
         fetch_text_mock.side_effect = [
             """
             <ownershipDocument>
@@ -111,6 +109,7 @@ class InsiderSalesTests(unittest.TestCase):
                 </nonDerivativeTransaction>
               </nonDerivativeTable>
             </ownershipDocument>
+            """,
             """,
             """
             <ownershipDocument>
@@ -140,34 +139,16 @@ class InsiderSalesTests(unittest.TestCase):
         self.assertEqual(sales[0]["shares_sold"], 12_000)
         self.assertIn("sale-one.xml", sales[0]["source_url"])
 
-    @patch("ipo_tracker.insiders.fetch_text")
-    @patch("ipo_tracker.insiders.fetch_json")
-    def test_fetch_post_unlock_sales_reads_archived_submission_fragments(self, fetch_json_mock, fetch_text_mock) -> None:
-        fetch_json_mock.side_effect = [
+    @patch("ipo_tracker.sec.fetch_text")
+    @patch("ipo_tracker.insiders.iter_submission_records")
+    def test_fetch_post_unlock_sales_reads_archived_submission_fragments(self, iter_records_mock, fetch_text_mock) -> None:
+        iter_records_mock.return_value = [
             {
-                "filings": {
-                    "recent": {
-                        "form": ["10-Q"],
-                        "accessionNumber": ["0001111111-26-000010"],
-                        "primaryDocument": ["quarterly.htm"],
-                        "filingDate": ["2026-05-01"],
-                    },
-                    "files": [
-                        {
-                            "name": "CIK0001111111-submissions-001.json",
-                            "filingCount": 1,
-                            "filingFrom": "2024-09-01",
-                            "filingTo": "2024-09-30",
-                        }
-                    ],
-                }
-            },
-            {
-                "form": ["4"],
-                "accessionNumber": ["0001111111-24-000111"],
-                "primaryDocument": ["archived-form4.xml"],
-                "filingDate": ["2024-09-20"],
-            },
+                "form": "4",
+                "accession_number": "0001111111-24-000111",
+                "primary_document": "archived-form4.xml",
+                "filing_date": "2024-09-20",
+            }
         ]
         fetch_text_mock.return_value = """
         <ownershipDocument>
@@ -196,19 +177,17 @@ class InsiderSalesTests(unittest.TestCase):
         self.assertEqual(sales[0]["shares_sold"], 9_000)
         self.assertIn("archived-form4.xml", sales[0]["source_url"])
 
-    @patch("ipo_tracker.insiders.fetch_text")
-    @patch("ipo_tracker.insiders.fetch_json")
-    def test_fetch_post_unlock_sales_uses_xml_companion_when_primary_document_is_html(self, fetch_json_mock, fetch_text_mock) -> None:
-        fetch_json_mock.return_value = {
-            "filings": {
-                "recent": {
-                    "form": ["4"],
-                    "accessionNumber": ["0001111111-24-000222"],
-                    "primaryDocument": ["form4.html"],
-                    "filingDate": ["2024-09-20"],
-                }
+    @patch("ipo_tracker.sec.fetch_text")
+    @patch("ipo_tracker.insiders.iter_submission_records")
+    def test_fetch_post_unlock_sales_uses_xml_companion_when_primary_document_is_html(self, iter_records_mock, fetch_text_mock) -> None:
+        iter_records_mock.return_value = [
+            {
+                "form": "4",
+                "accession_number": "0001111111-24-000222",
+                "primary_document": "form4.html",
+                "filing_date": "2024-09-20",
             }
-        }
+        ]
         fetch_text_mock.side_effect = [
             """
             <ownershipDocument>
