@@ -24,53 +24,55 @@ Codex may choose to update only this .md file to further clarify questions by pr
 
 ## Codex Handoff — 2026-07-27
 
-Current state after the user's latest live validation:
-- The refresh crash is fixed in practice: the user confirmed the app no longer crashes on `Refresh from SEC now`.
-- The first performance pass was NOT enough: the user measured refresh at roughly a minute or more even after the bounded thread-pool Form 4 fetch change.
-- The user's latest `RDDT` diagnostics still show substantial historical Form 4 work per refresh, including:
-  - `feed_entries = 100`
-  - `candidate_filings = 100`
-  - `documents_fetched = 43`
-  - `xml_documents = 41`
-  - `transactions_parsed = 209`
-- That confirms the remaining bottleneck is still repeated historical Form 4 parsing work, not the crash path.
+Current state after the user's latest live validation on Monday, July 27, 2026:
+- The incremental Form 4 refresh optimization is now live-confirmed.
+- User-measured refresh timing:
+  - first SEC refresh: about `30s`
+  - second SEC refresh: under `10s`
+- Latest `RDDT` diagnostics confirm the reuse path is actually being exercised, not just assumed:
+  - `status = sales_parsed`
+  - `reused_transactions = 453`
+  - `reused_filings = 53`
+  - `candidate_filings = 2`
+  - `documents_fetched = 2`
+  - `xml_documents = 1`
+  - `new_transactions_parsed = 12`
+- That means the major SEC refresh bottleneck from repeated historical Form 4 rebuilding is materially improved on repeat refreshes.
 
-What I changed just now:
-- `ipo_tracker/insiders.py`
-  - Added snapshot-aware incremental Form 4 refresh support via `existing_records=`.
-  - Reuses previously stored insider-sale records when the effective unlock date is unchanged.
-  - Stops scanning once the feed reaches filing dates older than the latest known stored filing date.
-  - Skips already-known direct archive XML / HTML-companion filings based on stored `source_url` values.
-  - Merges newly parsed sale transactions into existing history instead of rebuilding from scratch every time.
-  - Adds richer lookup metadata fields such as:
-    - `reused_transactions`
-    - `reused_filings`
-    - `new_transactions_parsed`
-  - Introduces incremental statuses such as `sales_reused` and `no_new_form4_filings`.
-- `ipo_tracker/sec.py`
-  - `enrich_company()` now passes prior snapshot insider-sales data into `fetch_post_unlock_sales(...)` when the company’s `effective_unlock_date` is unchanged.
-  - If the effective unlock date changes, it intentionally falls back to a full refresh so correctness is preserved.
-- `tests/test_insiders.py`
-  - Added regression coverage for:
-    1. reusing stored sales when there are no newer filings,
-    2. merging a newer filing into stored history.
+New remaining issue surfaced by the same live validation:
+- Market data can still be wiped on refresh when Yahoo Finance rate-limits the app.
+- The user's diagnostics showed:
+  - `ipo_price = null`
+  - `current_price = null`
+  - `price_change_pct = null`
+  - `avg_volume_30d = null`
+  - `market_cap = null`
+  - `market_data_note = "Market data fetch failed: Too Many Requests. Rate limited. Try after a while."`
+- So the SEC/Form 4 side improved, but the market-data path now needs graceful preservation under rate limiting.
 
-Why this was the chosen fix:
-- The live evidence showed that bounded concurrency alone did not solve the problem.
-- The highest-leverage next move was to eliminate repeated historical work, not just parallelize it.
-- This approach preserves correctness because it only reuses stored Form 4 history when the effective unlock boundary is unchanged.
-- It should be especially beneficial on the SECOND and later refreshes, which is why the next validation should compare back-to-back refresh runs rather than only a cold refresh.
+What I changed after that validation:
+- `ipo_tracker/market.py`
+  - Added `MARKET_VALUE_KEYS`.
+  - Added `market_data_has_values(data)` helper.
+  - Added `merge_market_snapshot(previous_snapshot, latest_market)`.
+  - Logic:
+    - if latest market payload has real values, keep it
+    - if latest payload failed with `Market data fetch failed: ...` and previous snapshot has real market values, reuse the previous market values
+    - append note text: `Reusing previous snapshot market data.`
+- `app.py`
+  - `refresh_live_data()` now calls `merge_market_snapshot(company, enriched)` before persisting the refreshed snapshot.
+  - Goal: a transient Yahoo rate limit should no longer replace previously good market fields with nulls.
 
-What still needs validation:
-- Measure two back-to-back refreshes after deployment. The second run matters most.
-- For an unlocked name like `RDDT`, confirm that diagnostics can now show an incremental-reuse status such as `sales_reused` when there are no newer filings.
-- If refresh is still slow even after this change, the remaining time is likely dominated by one of two things:
-  1. upstream SEC latency / rate limits,
-  2. other non-Form-4 enrichment work still being re-fetched each refresh.
+Important nuance:
+- I have NOT been able to live-run or locally test this market-preservation path because the local shell/runtime bridge is unavailable in this session.
+- So the market-rate-limit preservation change is code-complete but still needs user validation after deploy.
+
+Current assessment:
+- SEC/Form 4 refresh performance: materially improved and now confirmed live.
+- Crash resilience: confirmed live.
+- Remaining practical issue: Yahoo rate-limit degradation should preserve prior market data instead of clearing the UI, but this still needs validation.
 
 Most useful next Claude contribution if needed:
-- If the incremental-refresh pass still does not materially reduce repeat refresh time, analyze the remaining likely bottleneck split between:
-  1. SEC rate-limit / latency behavior requiring retry-backoff or lower concurrency,
-  2. non-Form-4 enrichment calls in `ipo_tracker/sec.py` still doing repeated work each refresh,
-  3. a stronger delta model for insider sales that records the latest processed filing anchor explicitly.
-- Please prioritize what should be instrumented next if we need another round, rather than proposing broad feature work.
+- Focus only on the market-data resilience question, not broad feature work.
+- If the preservation fix works, the next likely design question is whether we should also add a short TTL cache / backoff on Yahoo requests to reduce the chance of rate-limit hits.
+- If the preservation fix does NOT work, analyze whether the merge should happen earlier, later, or with a stricter note/error signature than `startswith("Market data fetch failed:")`.
