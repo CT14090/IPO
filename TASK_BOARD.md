@@ -14,6 +14,7 @@
 - The refreshed Streamlit screenshot confirms the market `% from IPO` column now uses the correct signed arithmetic.
 - A dedicated `Diagnostics` tab now exposes row-level JSON export and exact computed values for QA without screenshots.
 - Principal-holder table selection is now hardened to skip candidate tables without any numeric cell above 1000 before scoring, which blocks the ALAB table-of-contents false positive.
+- ALAB live validation confirms the principal-holder rows are now real and `early_release_pct` being `null` is correct for that filing.
 
 ## Implemented in `main`, Pending Live Validation
 - Automated IPO discovery is in `ipo_tracker/discovery.py` and shown in the Streamlit `Discovery` tab.
@@ -22,8 +23,7 @@
 - Discovery form values now fall back from `form_type` to `form` so the UI can show a non-blank form when SEC returns the alternate key.
 - Structured `lockup_conditions` data is now stored in snapshots and surfaced as its own panel in the company cards.
 - Market price/volume enrichment is now wired through `ipo_tracker/market.py`, `ipo_tracker/sec.py`, `ipo_tracker/db.py`, and `app.py`.
-- ALAB needs one more live refresh pass so we can confirm the refreshed snapshot now shows real principal-holder rows and a realistic confidence score.
-- `early_release_pct` should be rechecked on the refreshed ALAB snapshot; if it remains null, treat it as a live-filing coverage issue rather than a parser selection bug.
+- ALAB should still be rechecked after any future parsing changes, but the `early_release_pct` question is not a current bug.
 
 ## Needs Regression Tests
 - Add parser tests for greenshoe disambiguation.
