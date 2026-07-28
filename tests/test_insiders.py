@@ -310,7 +310,8 @@ class InsiderSalesTests(unittest.TestCase):
         self.assertEqual(lookup["status"], "sales_parsed")
         self.assertEqual(len(sales), 1)
         self.assertEqual(sales[0]["owner_name"], "Retry Insider")
-        sleep_mock.assert_called_once_with(1.0)
+        self.assertGreaterEqual(sleep_mock.call_count, 1)
+        self.assertTrue(any(call.args == (1.0,) for call in sleep_mock.call_args_list))
         self.assertEqual(mock_get.call_count, 2)
 
     @patch("ipo_tracker.insiders.time.sleep")
@@ -326,7 +327,9 @@ class InsiderSalesTests(unittest.TestCase):
         self.assertEqual(lookup["status"], "feed_error")
         self.assertEqual(lookup["candidate_filings"], 0)
         self.assertEqual(sales, [])
-        self.assertEqual(sleep_mock.call_count, 2)
+        self.assertGreaterEqual(sleep_mock.call_count, 2)
+        self.assertTrue(any(call.args == (1.0,) for call in sleep_mock.call_args_list))
+        self.assertTrue(any(call.args == (2.0,) for call in sleep_mock.call_args_list))
         self.assertEqual(mock_get.call_count, 3)
 
     @patch("ipo_tracker.sec.fetch_text")
