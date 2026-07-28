@@ -19,6 +19,8 @@
 - The latest `RDDT` diagnostics confirm the repeat-refresh reuse path is active: `reused_transactions = 453`, `reused_filings = 53`, `candidate_filings = 2`, `documents_fetched = 2`, `xml_documents = 2`, and `new_transactions_parsed = 26`.
 - On Tuesday, July 28, 2026, `ARM` initially exposed a live SEC `429` feed failure, and the later retry-plus-pacing pass successfully cleared that path: `insider_sales.lookup.status = sales_parsed`, `feed_entries = 29`, `candidate_filings = 28`, `xml_documents = 28`, and `transactions_parsed = 39`.
 - The ARM follow-up diagnostics also confirm that the lock-up parser improved from the earlier fallback state: `lockup_source` now resolves to `Lock-Up Restrictions section: Regex match: for a period of 180 days` instead of `No filing text available`.
+- The restored `sec.py` tail fixed the import-time deploy regression: the app is loading again, which confirms `ipo_tracker.sec` imports successfully after the truncation repair.
+- ARM principal-holder parsing is now live-confirmed to return a real holder row instead of `[]`: the diagnostics show `holder = SoftBank Group Corp.` with `shares = 1,025,233,999`.
 
 ## Confirmed By Screenshots Or User Visual Pass
 - The market `% from IPO` column now uses the correct signed arithmetic.
@@ -55,9 +57,8 @@
 - `tests/test_market.py` covers market-snapshot reuse when a previous good snapshot exists, explicit no-previous-snapshot note behavior, and the unchanged successful-market-data path.
 
 ## Still Open
-- Re-run the app after the restored `sec.py` tail and confirm the import-time startup failure is gone.
-- Live-validate the new ARM-style embedded-header holder parser by checking whether `ARM` `principal_holders` is no longer empty after refresh.
-- If `ARM` still comes back with `principal_holders = []`, inspect the remaining live table structure rather than the SEC feed path, because the SEC feed problem is already resolved.
+- Clean up residual holder-row noise for ARM-style tables: the live parsed row still contains stray numeric-string keys like `"8": "%"` and `"20": "%"`, so extraction is improved but not yet perfectly normalized.
+- Decide whether the holder parser should prefer the post-offering percent (`90.6%`) or preserve only the pre-offering percent (`100%`) when both are present in ARM-style tables.
 - Live-validate the new market fallback diagnostics by checking whether `market_data_note` explicitly says `Previous snapshot market data available: yes.` or `Previous snapshot market data available: no.` during a Yahoo rate-limit refresh.
 - If the diagnostics show `Previous snapshot market data available: no.`, decide whether to add a deeper look-back query in `ipo_tracker/db.py` for the most recent non-null market snapshot instead of only the immediate latest snapshot.
 - If the diagnostics show `Previous snapshot market data available: yes.` but market values are still null, debug the merge path further because that would indicate a real fallback bug rather than missing history.
@@ -82,6 +83,7 @@
 - Confirm `RDDT` still shows `effective_unlock_date = 2024-08-09` and live parsed Form 4 sales after the incremental-refresh change.
 - Confirm the app starts cleanly again after the restored `sec.py` tail.
 - Refresh `ARM` and inspect whether `principal_holders` now contains real holder rows instead of an empty list.
+- If ARM holder rows appear, inspect whether stray unlabeled keys still remain on the parsed object.
 - Reproduce a Yahoo Finance rate-limit scenario and inspect `market_data_note`.
 - If `market_data_note` says `Previous snapshot market data available: no.`, treat the issue as missing reusable history rather than a broken merge.
 - If `market_data_note` says `Previous snapshot market data available: yes.` but market values are still empty, treat the issue as a real fallback bug.
