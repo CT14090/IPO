@@ -24,46 +24,56 @@ Codex may choose to update only this .md file to further clarify questions by pr
 
 ## Codex Handoff — 2026-07-28
 
-Tuesday, July 28, 2026 live validation after the retry-plus-pacing patch succeeded for `ARM`.
+Current state after the latest work on Tuesday, July 28, 2026:
 
-What the new live diagnostics prove:
-- `ARM` no longer ends in `feed_error`.
-- It now shows:
+1. The SEC/Form 4 feed issue is already fixed and live-confirmed.
+- Problem was not the issuer logic anymore; it was SEC throttling on the owner-include Atom feed for names like `ARM`.
+- Codex fixed that with:
+  - bounded retry/backoff for `429` and `503`
+  - short cross-company pacing between feed requests
+- Live proof already seen in ARM diagnostics:
   - `insider_sales.lookup.status = sales_parsed`
   - `feed_entries = 29`
   - `candidate_filings = 28`
-  - `documents_fetched = 28`
   - `xml_documents = 28`
   - `transactions_parsed = 39`
-  - `filing_count = 17`
-  - `total_shares_sold = 302,915`
-- This is strong evidence that the combination of:
-  1. feed retry/backoff, and
-  2. short cross-company pacing
-  fixed the specific SEC owner-include feed throttling problem we were seeing on ARM.
 
-Additional useful live signal from the same JSON:
-- `ARM` lock-up parsing also improved versus the earlier fallback state.
-- `lockup_source` now reads:
-  - `Lock-Up Restrictions section: Regex match: for a period of 180 days`
-  instead of:
-  - `No filing text available`
-- Principal holders are still not being parsed cleanly for ARM, so that part remains a separate quality gap.
+2. We have now moved on to the next requested item: principal-holder parsing quality.
+- Commit already on `main`:
+  - `c867568` `Improve principal holder parsing for embedded header tables`
+- What that parser change does:
+  - recognizes more holder-header placeholder phrases such as `Name of Beneficial Shareholder`
+  - treats `Number` as a shares-like column when the table embeds minimal subheaders
+  - avoids overwriting a stronger numeric shares/percent value with a later weaker duplicate
+  - promotes embedded multi-row header rows into real DataFrame columns before canonicalizing holder rows
+- This specifically targets SEC prospectus tables like ARM where the real `Name / Number / Percent` labels appear in the first body rows rather than as clean `<th>` headers.
 
-What I updated after this validation:
-- `TASK_BOARD.md`
-  - marked the ARM SEC feed path as live-confirmed successful after retry plus pacing
-  - moved that item out of the unresolved bucket conceptually
-- No new code was needed after seeing this JSON; this was validation-only.
+3. I also added regression coverage so this work is not only code-without-guardrails.
+- New commit on `main`:
+  - `6de89b3` `Add regression test for embedded principal holder headers`
+- The new unit test uses an ARM-shaped simplified table with:
+  - a top row describing pre/post offering blocks
+  - a second row with `Name of Beneficial Shareholder | Number | Percent | ...`
+  - a `SoftBank Group Corp.` data row
+- Expected result in the test:
+  - parser returns one real holder row
+  - `holder = SoftBank Group Corp.`
+  - `shares = 1,025,233,999`
+  - `percent = 100.0`
 
-Current project state:
-- SEC/Form 4 refresh reuse: confirmed live
-- SEC owner-include 429 resilience for ARM: confirmed live
-- Market fallback instrumentation: still waiting for a Yahoo rate-limit case to exercise it
-- Remaining notable parser-quality gap: ARM principal holders still empty / not cleanly parsed
+4. Docs are updated too.
+- `TASK_BOARD.md` now records that:
+  - the embedded-header parser improvement is implemented in `main`
+  - the next live validation target is ARM `principal_holders`
+- If Claude needs to inspect project status, the board is up to date.
 
-If Claude is needed next, the most useful contribution would NOT be SEC-rate-limit work anymore.
-The most useful next analysis target would be either:
-1. principal-holder parsing quality on names like `ARM`, or
-2. whether we should now move to shares-outstanding / locked-percentage context,
-but only if we decide that parser quality is good enough to support that.
+What remains right now:
+- We still do NOT have live evidence yet that ARM `principal_holders` is populated after this parser change.
+- The next validation target is straightforward:
+  - refresh SEC data
+  - open ARM diagnostics
+  - inspect whether `principal_holders` is still `[]` or now contains real rows
+
+What Claude would be most useful for next, only if the live ARM validation still fails:
+- analyze the exact remaining ARM holder-table structure and explain why the promoted-header path still misses it
+- otherwise no further analysis is needed before the next validation step
