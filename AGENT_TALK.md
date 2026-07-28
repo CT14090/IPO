@@ -24,38 +24,40 @@ Codex may choose to update only this .md file to further clarify questions by pr
 
 ## Codex Handoff — 2026-07-28
 
-A deploy-blocking regression was found and fixed on Tuesday, July 28, 2026.
+Tuesday, July 28, 2026 live validation has now advanced beyond the prior `ARM principal_holders = []` state.
 
-What broke:
-- Streamlit failed at import time on:
-  - `from ipo_tracker.sec import enrich_company`
-- Root cause was not Streamlit config and not the new SEC logic itself.
-- `ipo_tracker/sec.py` on `main` had become physically truncated during the last edit.
-- The file ended mid-function inside `determine_effective_unlock_date(...)`, before the rest of that function and before the `enrich_company(...)` definition.
-- Because the Python module was incomplete, importing `ipo_tracker.sec` failed and surfaced as the app-level `ImportError`.
+New live result from the user:
+- `principal_holders` now contains a real parsed row:
+  - `holder = SoftBank Group Corp.`
+  - `shares = 1025233999`
+- This is the main success condition we were trying to reach for the embedded-header parser pass.
+- It means the parser is no longer completely missing the ARM-style prospectus table.
 
-What Codex did:
-- compared the current broken `sec.py` with the last known-good version before the truncation
-- restored the missing tail of the module while preserving the newer embedded-header principal-holder parsing changes already on `main`
-- restore commit:
-  - `1dfaded` `Restore truncated sec module tail`
+But the live output also shows the parser is not fully normalized yet:
+- same row still contains stray unlabeled keys:
+  - `"8": "%"`
+  - `"20": "%"`
+- So the current state is:
+  - materially improved and live-useful
+  - but not yet clean / final
 
-What is restored by that fix:
-- completion of `determine_effective_unlock_date(...)`
-- the full `enrich_company(...)` helper
-- the module can now parse/import again unless there is a separate runtime issue
+Most likely interpretation:
+- promoted header handling is now good enough to anchor the real holder row
+- however duplicate or unlabeled percent columns from the wide ARM table are still leaking through into the canonicalized dict
+- the parser is probably preserving columns whose normalized names are not mapped to `shares` / `percent` / `holder`, so their raw DataFrame column labels survive as numeric-string keys
 
-Important interpretation:
-- this was a file-corruption / incomplete-commit style regression
-- it does NOT invalidate the earlier SEC feed retry/pacing work
-- it does NOT invalidate the embedded principal-holder parser work conceptually
-- it simply means the repo had a broken `sec.py` artifact that prevented any of that code from loading
+What Codex already did after this validation:
+- updated `TASK_BOARD.md` to reflect:
+  - ARM holder parsing is now live-confirmed non-empty
+  - residual cleanup remains for stray numeric-string keys and multi-percent interpretation
 
-Current next validation target:
-1. redeploy / rerun the app and confirm import-time startup succeeds again
-2. then resume the previously planned ARM holder validation:
-   - refresh SEC data
-   - inspect `ARM` diagnostics
-   - check whether `principal_holders` is still `[]` or now populated
+Best next engineering target:
+1. clean up residual holder-row noise for ARM-style tables
+2. decide policy for multi-percent / multi-number tables:
+   - should we preserve pre-offering fields only?
+   - post-offering fields only?
+   - or structured separate fields?
 
-Only if the app starts cleanly but ARM holder rows are still empty would Claude analysis be useful again.
+If Claude is useful here, the best analysis target is:
+- how to normalize wide prospectus holder tables with both pre-offering and post-offering columns without losing meaning or leaking raw numeric column names into the output dict
+- especially whether the product should keep only one canonical `percent` / `shares` pair or move to a more explicit structure for wide tables
