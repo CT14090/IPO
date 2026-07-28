@@ -39,15 +39,19 @@
 - Structured Form 4 lookup metadata is embedded alongside stored insider-sale records, and the company-card / diagnostics surfaces can distinguish between `sales parsed`, `no qualifying filings`, `no sale transactions`, `sales reused`, and `feed/doc resolution` problems without a new DB migration.
 - `ipo_tracker/insiders.py` no longer pulls `ipo_tracker.sec` at module import time; that import-hardening targeted the startup error path.
 - `app.py` handles per-company `requests.RequestException` failures during `Refresh from SEC now`, keeps the previous snapshot for failed companies, and surfaces explicit sidebar warnings instead of crashing the whole app.
-- `ipo_tracker/market.py` and `app.py` now attempt to preserve the previous market snapshot when a live Yahoo Finance request fails with a rate-limit style error, instead of intentionally overwriting good values with all-null fields.
+- `ipo_tracker/market.py` now writes explicit fallback diagnostics into `market_data_note` so the persisted snapshot can distinguish `Previous snapshot market data available: yes.` from `Previous snapshot market data available: no.` during Yahoo rate-limit failures.
+- When a previous good market snapshot exists, `ipo_tracker/market.py` also appends `Reusing previous snapshot market data.` to the stored note while preserving the prior values.
 
 ## Covered By Tests
 - `tests/test_sec.py` covers lock-up extraction, fallback behavior, long-window early-release percent parsing, greenshoe disambiguation, early-release and earnings-trigger detection, 8-K amendment detection, cover-page IPO date extraction, holder parsing, trading-day offsets, effective unlock date resolution, and confidence scoring.
 - `tests/test_discovery.py` covers source-name fallback and nameless-candidate skipping.
 - `tests/test_insiders.py` now covers owner-include Form 4 feed parsing, post-unlock filtering, direct XML filing links, HTML-to-XML companion fallback, zero-result lookup metadata, incremental history reuse when there are no new filings, incremental merge behavior when a newer filing appears, and insider-sale summary math that ignores embedded lookup metadata.
+- `tests/test_market.py` covers market-snapshot reuse when a previous good snapshot exists, explicit no-previous-snapshot note behavior, and the unchanged successful-market-data path.
 
 ## Still Open
-- Debug why the market-snapshot preservation path did not surface in live `RDDT` diagnostics: market fields were still `null` and `market_data_note` did not include the expected reuse message after the July 27, 2026 validation.
+- Live-validate the new market fallback diagnostics on Tuesday, July 28, 2026 or later by checking whether `market_data_note` now explicitly says `Previous snapshot market data available: yes.` or `Previous snapshot market data available: no.` during a Yahoo rate-limit refresh.
+- If the diagnostics show `Previous snapshot market data available: no.`, decide whether to add a deeper look-back query in `ipo_tracker/db.py` for the most recent non-null market snapshot instead of only the immediate latest snapshot.
+- If the diagnostics show `Previous snapshot market data available: yes.` but market values are still null, debug the merge path further because that would indicate a real fallback bug rather than missing history.
 - Decide whether Yahoo rate-limit resilience needs an additional cache or retry/backoff layer beyond snapshot preservation.
 - Decide whether the cold-refresh path still needs another speed pass, even though repeat refreshes are now materially faster.
 - Confirm that the new `insider_sales.lookup.status` values are enough in practice to explain remaining edge cases without needing a DB-level dedicated lookup table.
@@ -66,7 +70,9 @@
 - Confirm the app still does not crash if one SEC request fails and that the sidebar still names the affected ticker.
 - Confirm the `Diagnostics` tab includes `calendar_unlock_date`, `effective_unlock_date`, and the `insider_sales` section with `lookup`, `summary`, and `transactions`.
 - Confirm `RDDT` still shows `effective_unlock_date = 2024-08-09` and live parsed Form 4 sales after the incremental-refresh change.
-- Reproduce a Yahoo Finance rate-limit scenario and confirm whether the market note includes the reuse message; if it does not, treat the preservation path as still failing.
+- Reproduce a Yahoo Finance rate-limit scenario and inspect `market_data_note`.
+- If `market_data_note` says `Previous snapshot market data available: no.`, treat the issue as missing reusable history rather than a broken merge.
+- If `market_data_note` says `Previous snapshot market data available: yes.` but market values are still empty, treat the issue as a real fallback bug.
 - Ignore Form 144-only evidence when judging the Form 4 feature, because Form 144 is intent-to-sell, not completed Form 4 sale execution.
 
 ## Notes
