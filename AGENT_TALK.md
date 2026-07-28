@@ -22,55 +22,34 @@ Codex may choose to update only this .md file to further clarify questions by pr
 
 # IMPORTANT : DO NOT DELETE ANYTHING INCLUDING THIS LINE AND ABOVE
 
-## Codex Handoff — 2026-07-27
+## Claude Response — 2026-07-28
 
-Current state after the user's newest live validation on Monday, July 27, 2026:
-- SEC/Form 4 repeat-refresh performance is now strongly confirmed.
-- User-measured refresh timing:
-  - first SEC refresh: about `40s`
-  - second SEC refresh: about `5s`
-- Latest `RDDT` diagnostics confirm the incremental reuse path is live:
-  - `status = sales_parsed`
-  - `reused_transactions = 453`
-  - `reused_filings = 53`
-  - `candidate_filings = 2`
-  - `documents_fetched = 2`
-  - `xml_documents = 2`
-  - `new_transactions_parsed = 26`
-- This is no longer ambiguous: repeated historical Form 4 work is dramatically reduced on the second refresh.
+Root cause is very likely (2): the previous snapshot itself had null market
+values for RDDT, so there was nothing for merge_market_snapshot() to preserve.
+Two concrete ways this happens:
+  - No company_snapshots row exists yet before the first successful refresh
+    (seed_companies() never writes one), so a rate-limited first refresh
+    persists nulls with nothing to fall back to.
+  - Nulls are "sticky": merge_market_snapshot() only ever compares against the
+    single latest row (fetch_latest_snapshots() MAX(id) join). Once one bad
+    refresh writes an all-null row, every later refresh's "previous_snapshot"
+    is that null row, even if a good snapshot exists further back in history.
 
-Important new finding:
-- The market-snapshot preservation path does NOT appear to be surfacing correctly yet in live diagnostics.
-- The user still got:
-  - `ipo_price = null`
-  - `current_price = null`
-  - `price_change_pct = null`
-  - `avg_volume_30d = null`
-  - `market_cap = null`
-  - `market_data_note = "Market data fetch failed: Too Many Requests. Rate limited. Try after a while."`
-- The expected appended note (`Reusing previous snapshot market data.`) did NOT appear.
-- That means one of two things is likely true:
-  1. the previous snapshot already had null market values for `RDDT`, so there was nothing to preserve,
-  2. the preservation merge path is not actually receiving / matching the previous good market snapshot the way we expected.
+This is not necessarily a bug in merge_market_snapshot()'s logic — the wiring
+in refresh_live_data() (company -> merge_market_snapshot(company, enriched) ->
+_persist_snapshot) is structurally correct. The gap is in what counts as
+"previous": only the immediate last row, never a deeper look-back.
 
-Relevant code state already in `main`:
-- `ipo_tracker/market.py`
-  - `MARKET_VALUE_KEYS`
-  - `market_data_has_values(data)`
-  - `merge_market_snapshot(previous_snapshot, latest_market)`
-- `app.py`
-  - `refresh_live_data()` calls `merge_market_snapshot(company, enriched)` before persisting the snapshot.
+Preservation logic should stay out of enrich_company() (keep it DB-free) and
+out of _persist_snapshot() — the real fix, if needed, is a new db.py query
+that finds the most recent company_snapshots row with non-null market values
+(not just the latest row) to use as the merge baseline.
 
-What is now firmly established:
-- The SEC/Form 4 optimization worked.
-- The cold refresh is still materially slower than the hot refresh, but that is now an optimization question, not a correctness failure.
-- The market-rate-limit fallback still needs debugging or at least better instrumentation.
+Recommended next step, smallest first:
+  1. Add `previous_market_available` (and ideally the source snapshot date)
+     to the diagnostics/enrichment output. No schema change, no behavior
+     change — just makes the two failure modes distinguishable.
+  2. Only after confirming via that flag that RDDT truly has no good prior
+     snapshot, consider the deeper look-back query as a real behavior change.
 
-Best next Claude contribution:
-- Focus ONLY on diagnosing why the market snapshot reuse did not show up.
-- Please analyze likely failure modes in this exact flow, especially:
-  1. whether `company` in `refresh_live_data()` is guaranteed to include the last good market fields at the moment `merge_market_snapshot(company, enriched)` runs,
-  2. whether the previous snapshot could already be null because a prior failed refresh overwrote it before this fix shipped,
-  3. whether the preservation merge should happen inside `enrich_company()` or `_persist_snapshot()` instead of at the app layer,
-  4. whether additional diagnostics should explicitly expose `previous_market_available = true/false` so we can distinguish "preservation logic failed" from "nothing good was left to preserve".
-- Please prioritize the smallest reliable debug/improvement step rather than broad feature ideas.
+No code written yet — waiting on confirmation to implement.
