@@ -1068,3 +1068,160 @@ def determine_effective_unlock_date(
         quarter_end=quarter_end,
         latest_unlock_date=calendar_unlock_date,
     )
+    release_date = _parse_iso_date(release_date_text)
+    if release_date is None:
+        return calendar_unlock_date, None, None, None
+
+    effective_unlock_date = add_trading_days(release_date, 3)
+    if effective_unlock_date >= calendar_unlock_date:
+        return calendar_unlock_date, release_date.isoformat(), release_url, None
+
+    source = f"Earnings trigger: 3 trading days after earnings release filed {release_date.isoformat()}"
+    return effective_unlock_date, release_date.isoformat(), release_url, source
+
+
+# ── Convenience enrichment helper ─────────────────────────────────────────────
+def enrich_company(company: dict[str, Any]) -> dict[str, Any]:
+    """
+    Fetch and compute all live SEC-derived fields for one watchlist company.
+
+    Returns a dict with keys consumed by the DB snapshot and Streamlit UI.
+    """
+    from .insiders import fetch_post_unlock_sales, summarize_insider_sales
+    from .market import fetch_market_data  # local import to avoid circular dependency
+
+    cik = company["cik"]
+    seeded_ipo_date = company["ipo_date"]
+    seeded_ipo_dt = date.fromisoformat(seeded_ipo_date)
+
+    filing_ref = find_latest_ipo_filing(cik, oldest_needed_date=seeded_ipo_dt)
+    source_url = filing_ref.filing_url if filing_ref else None
+    filing_form = filing_ref.form if filing_ref else None
+    filing_date = filing_ref.filing_date if filing_ref else None
+
+    html_text = ""
+    if source_url:
+        try:
+            html_text = fetch_text(source_url)
+        except requests.RequestException:
+            html_text = ""
+
+    lockup_conditions = (
+        extract_lockup_conditions(html_text)
+        if html_text
+        else LockupConditions(DEFAULT_LOCKUP_DAYS, "No filing text available")
+    )
+    principal_holders = extract_principal_holders(html_text) if html_text else []
+
+    parsed_ipo_date = extract_ipo_date_from_text(html_text) if html_text else None
+    if not parsed_ipo_date:
+        parsed_ipo_date = seeded_ipo_date
+    parsed_ipo_dt = date.fromisoformat(parsed_ipo_date)
+
+    amendment_date, amendment_url, amendment_excerpt = (None, None, None)
+    try:
+        amendment_date, amendment_url, amendment_excerpt = find_lockup_amendment_8k(
+            cik=cik,
+            ipo_date=parsed_ipo_dt,
+        )
+    except Exception:
+        amendment_date, amendment_url, amendment_excerpt = None, None, None
+
+    if amendment_date:
+        lockup_conditions.amendment_date = amendment_date
+        lockup_conditions.amendment_url = amendment_url
+        if amendment_excerpt:
+            if lockup_conditions.early_release_description:
+                lockup_conditions.early_release_description = (
+                    f"{lockup_conditions.early_release_description} | {amendment_excerpt}"
+                )
+            else:
+                lockup_conditions.early_release_description = amendment_excerpt
+
+    if lockup_conditions.lockup_days <= 0:
+        lockup_conditions.lockup_days = DEFAULT_LOCKUP_DAYS
+
+    calendar_unlock_dt = parsed_ipo_dt + timedelta(days=lockup_conditions.lockup_days)
+    effective_unlock_dt, earnings_release_date, earnings_release_url, effective_unlock_source = determine_effective_unlock_date(
+        cik,
+        lockup_conditions,
+        calendar_unlock_date=calendar_unlock_dt,
+    )
+    lockup_conditions.earnings_release_date = earnings_release_date
+    lockup_conditions.earnings_release_url = earnings_release_url
+    lockup_conditions.effective_unlock_date = effective_unlock_dt.isoformat()
+    lockup_conditions.effective_unlock_source = effective_unlock_source
+
+    insider_sales: list[dict[str, Any]] = []
+    if date.today() >= effective_unlock_dt:
+        existing_insider_sales = None
+        if company.get("effective_unlock_date") == effective_unlock_dt.isoformat():
+            existing_insider_sales = company.get("insider_sales", [])
+        insider_sales = fetch_post_unlock_sales(
+            cik,
+            effective_unlock_dt.isoformat(),
+            existing_records=existing_insider_sales,
+        )
+    insider_sales_summary = summarize_insider_sales(insider_sales)
+
+    market = fetch_market_data(company.get("ticker", ""), parsed_ipo_date)
+    price_change_pct = market.get("price_change_pct")
+
+    confidence_score, confidence_label, confidence_details = assess_data_confidence(
+        filing_form=filing_form,
+        lockup_source=lockup_conditions.lockup_source,
+        principal_holders=principal_holders,
+        parsed_ipo_date=parsed_ipo_date,
+        source_url=source_url,
+        has_early_release=lockup_conditions.has_early_release,
+        has_8k_amendment=bool(amendment_date),
+    )
+
+    notes = lockup_conditions.notes_summary()
+    if insider_sales_summary["transaction_count"]:
+        notes = (
+            f"{notes} | Post-unlock Form 4 sales parsed: "
+            f"{insider_sales_summary['transaction_count']} transaction(s) across "
+            f"{insider_sales_summary['filing_count']} filing(s), "
+            f"{insider_sales_summary['total_shares_sold']:,} shares sold"
+        )
+    if confidence_details:
+        notes = f"{notes} | {confidence_details}"
+
+    return {
+        "filing_form": filing_form,
+        "filing_date": filing_date,
+        "source_url": source_url,
+        "lockup_days": lockup_conditions.lockup_days,
+        "unlock_date": calendar_unlock_dt.isoformat(),
+        "effective_unlock_date": effective_unlock_dt.isoformat(),
+        "principal_holders": principal_holders,
+        "lockup_source": lockup_conditions.lockup_source,
+        "lockup_conditions": {
+            "lockup_days": lockup_conditions.lockup_days,
+            "lockup_source": lockup_conditions.lockup_source,
+            "has_early_release": lockup_conditions.has_early_release,
+            "early_release_description": lockup_conditions.early_release_description,
+            "has_earnings_trigger": lockup_conditions.has_earnings_trigger,
+            "early_release_pct": lockup_conditions.early_release_pct,
+            "amendment_date": lockup_conditions.amendment_date,
+            "amendment_url": lockup_conditions.amendment_url,
+            "earnings_release_quarter_end": lockup_conditions.earnings_release_quarter_end,
+            "earnings_release_date": lockup_conditions.earnings_release_date,
+            "earnings_release_url": lockup_conditions.earnings_release_url,
+            "effective_unlock_date": lockup_conditions.effective_unlock_date,
+            "effective_unlock_source": lockup_conditions.effective_unlock_source,
+        },
+        "insider_sales": insider_sales,
+        "ipo_price": market.get("ipo_price"),
+        "current_price": market.get("current_price"),
+        "price_change_pct": price_change_pct,
+        "avg_volume_30d": market.get("avg_volume_30d"),
+        "market_cap": market.get("market_cap"),
+        "market_data_note": market.get("market_data_note", ""),
+        "parsed_ipo_date": parsed_ipo_date,
+        "confidence_score": confidence_score,
+        "confidence_label": confidence_label,
+        "confidence_details": confidence_details,
+        "notes": notes,
+    }
