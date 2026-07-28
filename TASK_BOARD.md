@@ -17,7 +17,8 @@
 - The July 27, 2026 per-company refresh failure handling is live-confirmed in the negative case: the app no longer hard-crashes on the refresh path that previously raised SEC `HTTPError`.
 - The incremental Form 4 refresh optimization is now strongly live-confirmed: the user measured a cold SEC refresh at about `40s` and the second refresh at about `5s`.
 - The latest `RDDT` diagnostics confirm the repeat-refresh reuse path is active: `reused_transactions = 453`, `reused_filings = 53`, `candidate_filings = 2`, `documents_fetched = 2`, `xml_documents = 2`, and `new_transactions_parsed = 26`.
-- On Tuesday, July 28, 2026, `ARM` still showed a real live SEC failure mode after the first retry pass: `insider_sales.lookup.status = feed_error` caused by a `429 Too Many Requests` response from the SEC owner-include Form 4 feed.
+- On Tuesday, July 28, 2026, `ARM` initially exposed a live SEC `429` feed failure, and the later retry-plus-pacing pass successfully cleared that path: `insider_sales.lookup.status = sales_parsed`, `feed_entries = 29`, `candidate_filings = 28`, `xml_documents = 28`, and `transactions_parsed = 39`.
+- The ARM follow-up diagnostics also confirm that the lock-up parser improved from the earlier fallback state: `lockup_source` now resolves to `Lock-Up Restrictions section: Regex match: for a period of 180 days` instead of `No filing text available`.
 
 ## Confirmed By Screenshots Or User Visual Pass
 - The market `% from IPO` column now uses the correct signed arithmetic.
@@ -43,7 +44,7 @@
 - `ipo_tracker/market.py` now writes explicit fallback diagnostics into `market_data_note` so the persisted snapshot can distinguish `Previous snapshot market data available: yes.` from `Previous snapshot market data available: no.` during Yahoo rate-limit failures.
 - When a previous good market snapshot exists, `ipo_tracker/market.py` also appends `Reusing previous snapshot market data.` to the stored note while preserving the prior values.
 - `ipo_tracker/insiders.py` retries the SEC owner-include Form 4 Atom feed up to 3 times for `429` and `503` responses, with short bounded backoff and `Retry-After` header support.
-- `ipo_tracker/insiders.py` now also spaces owner-include feed requests across companies with a short global minimum interval before each feed fetch, to reduce the chance of tripping SEC rate limits during one dashboard refresh.
+- `ipo_tracker/insiders.py` spaces owner-include feed requests across companies with a short global minimum interval before each feed fetch, which appears to have resolved the ARM feed-error path in live use.
 
 ## Covered By Tests
 - `tests/test_sec.py` covers lock-up extraction, fallback behavior, long-window early-release percent parsing, greenshoe disambiguation, early-release and earnings-trigger detection, 8-K amendment detection, cover-page IPO date extraction, holder parsing, trading-day offsets, effective unlock date resolution, and confidence scoring.
@@ -52,7 +53,6 @@
 - `tests/test_market.py` covers market-snapshot reuse when a previous good snapshot exists, explicit no-previous-snapshot note behavior, and the unchanged successful-market-data path.
 
 ## Still Open
-- Live-validate whether the combination of SEC feed retry plus cross-company feed pacing reduces or eliminates ARM-style `feed_error` results after Tuesday, July 28, 2026.
 - Live-validate the new market fallback diagnostics by checking whether `market_data_note` explicitly says `Previous snapshot market data available: yes.` or `Previous snapshot market data available: no.` during a Yahoo rate-limit refresh.
 - If the diagnostics show `Previous snapshot market data available: no.`, decide whether to add a deeper look-back query in `ipo_tracker/db.py` for the most recent non-null market snapshot instead of only the immediate latest snapshot.
 - If the diagnostics show `Previous snapshot market data available: yes.` but market values are still null, debug the merge path further because that would indicate a real fallback bug rather than missing history.
