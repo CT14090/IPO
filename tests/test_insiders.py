@@ -3,6 +3,8 @@ from __future__ import annotations
 import unittest
 from unittest.mock import MagicMock, patch
 
+import requests
+
 from ipo_tracker.insiders import (
     fetch_post_unlock_sales,
     parse_form4_sales,
@@ -16,6 +18,16 @@ def _feed_response(xml_text: str) -> MagicMock:
     response.raise_for_status.return_value = None
     response.text = xml_text
     return response
+
+
+def _http_error(status_code: int, reason: str = "Too Many Requests") -> requests.HTTPError:
+    response = MagicMock()
+    response.status_code = status_code
+    response.reason = reason
+    response.headers = {}
+    error = requests.HTTPError(f"{status_code} Client Error: {reason}")
+    error.response = response
+    return error
 
 
 class InsiderSalesTests(unittest.TestCase):
@@ -253,6 +265,69 @@ class InsiderSalesTests(unittest.TestCase):
         self.assertEqual(lookup["status"], "no_form4_filings_after_unlock")
         self.assertEqual(lookup["candidate_filings"], 0)
         self.assertEqual(sales, [])
+
+    @patch("ipo_tracker.insiders.time.sleep")
+    @patch("ipo_tracker.sec.fetch_text")
+    @patch("ipo_tracker.insiders.requests.get")
+    def test_fetch_post_unlock_sales_retries_rate_limited_feed_then_succeeds(self, mock_get, fetch_text_mock, sleep_mock) -> None:
+        throttled = MagicMock()
+        throttled.raise_for_status.side_effect = _http_error(429)
+        success = _feed_response(
+            """
+            <feed xmlns="http://www.w3.org/2005/Atom">
+              <entry>
+                <title>4 - Retry Issuer</title>
+                <updated>2024-09-20T18:00:00-04:00</updated>
+                <link rel="alternate" href="https://www.sec.gov/Archives/edgar/data/7777777/000111111124000777/retry-sale.xml" />
+              </entry>
+            </feed>
+            """
+        )
+        mock_get.side_effect = [throttled, success]
+        fetch_text_mock.return_value = """
+        <ownershipDocument>
+          <periodOfReport>2024-09-20</periodOfReport>
+          <reportingOwner>
+            <reportingOwnerId><rptOwnerName>Retry Insider</rptOwnerName></reportingOwnerId>
+          </reportingOwner>
+          <nonDerivativeTable>
+            <nonDerivativeTransaction>
+              <transactionDate><value>2024-09-19</value></transactionDate>
+              <transactionCoding><transactionCode>S</transactionCode></transactionCoding>
+              <transactionAmounts>
+                <transactionShares><value>10000</value></transactionShares>
+                <transactionPricePerShare><value>31.00</value></transactionPricePerShare>
+                <transactionAcquiredDisposedCode><value>D</value></transactionAcquiredDisposedCode>
+              </transactionAmounts>
+            </nonDerivativeTransaction>
+          </nonDerivativeTable>
+        </ownershipDocument>
+        """
+
+        records = fetch_post_unlock_sales(7777777, "2024-09-15")
+        lookup, sales = split_insider_sales_records(records)
+
+        self.assertEqual(lookup["status"], "sales_parsed")
+        self.assertEqual(len(sales), 1)
+        self.assertEqual(sales[0]["owner_name"], "Retry Insider")
+        sleep_mock.assert_called_once_with(1.0)
+        self.assertEqual(mock_get.call_count, 2)
+
+    @patch("ipo_tracker.insiders.time.sleep")
+    @patch("ipo_tracker.insiders.requests.get")
+    def test_fetch_post_unlock_sales_reports_feed_error_after_repeated_rate_limits(self, mock_get, sleep_mock) -> None:
+        throttled = MagicMock()
+        throttled.raise_for_status.side_effect = _http_error(429)
+        mock_get.side_effect = [throttled, throttled, throttled]
+
+        records = fetch_post_unlock_sales(8888888, "2024-09-15")
+        lookup, sales = split_insider_sales_records(records)
+
+        self.assertEqual(lookup["status"], "feed_error")
+        self.assertEqual(lookup["candidate_filings"], 0)
+        self.assertEqual(sales, [])
+        self.assertEqual(sleep_mock.call_count, 2)
+        self.assertEqual(mock_get.call_count, 3)
 
     @patch("ipo_tracker.sec.fetch_text")
     @patch("ipo_tracker.insiders.requests.get")
