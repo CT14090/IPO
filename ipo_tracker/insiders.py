@@ -5,6 +5,7 @@ from datetime import date
 from functools import lru_cache
 from pathlib import PurePosixPath
 import re
+from threading import Lock
 import time
 from typing import Any
 from urllib.parse import urljoin
@@ -25,7 +26,10 @@ OWNER_INCLUDE_FORM4_FEED = (
     "&count={count}&output=atom"
 )
 OWNER_INCLUDE_FEED_MAX_ATTEMPTS = 3
+OWNER_INCLUDE_FEED_MIN_INTERVAL_SECONDS = 0.35
 SALE_TRANSACTION_CODES = {"S"}
+_OWNER_INCLUDE_FEED_LOCK = Lock()
+_LAST_OWNER_INCLUDE_FEED_REQUEST_AT = 0.0
 
 
 def _normalize_cik(cik: int | str) -> str:
@@ -110,13 +114,11 @@ def _extract_form_from_entry(title: str, summary: str) -> str:
     return match.group(1).upper() if match else ""
 
 
-
 def _should_retry_feed_request(exc: requests.RequestException) -> bool:
     response = getattr(exc, "response", None)
     if response is None:
         return False
     return response.status_code in {429, 503}
-
 
 
 def _retry_delay_seconds(exc: requests.RequestException, attempt: int) -> float:
@@ -131,11 +133,24 @@ def _retry_delay_seconds(exc: requests.RequestException, attempt: int) -> float:
     return float(min(attempt, 3))
 
 
+def _pace_owner_include_feed_request() -> None:
+    global _LAST_OWNER_INCLUDE_FEED_REQUEST_AT
+    with _OWNER_INCLUDE_FEED_LOCK:
+        now = time.monotonic()
+        if _LAST_OWNER_INCLUDE_FEED_REQUEST_AT:
+            wait_seconds = OWNER_INCLUDE_FEED_MIN_INTERVAL_SECONDS - (now - _LAST_OWNER_INCLUDE_FEED_REQUEST_AT)
+            if wait_seconds > 0:
+                time.sleep(wait_seconds)
+                now = time.monotonic()
+        _LAST_OWNER_INCLUDE_FEED_REQUEST_AT = now
+
+
 @lru_cache(maxsize=256)
 def _fetch_owner_include_feed(normalized_cik: str) -> str:
     url = OWNER_INCLUDE_FORM4_FEED.format(cik=normalized_cik, count=OWNER_INCLUDE_FORM4_COUNT)
     last_exc: requests.RequestException | None = None
     for attempt in range(1, OWNER_INCLUDE_FEED_MAX_ATTEMPTS + 1):
+        _pace_owner_include_feed_request()
         try:
             response = requests.get(url, headers=_sec_headers(), timeout=30)
             response.raise_for_status()
