@@ -232,6 +232,56 @@ class SecParserTests(unittest.TestCase):
         self.assertEqual(holders[1]["shares"], 8_765_432)
         self.assertAlmostEqual(holders[1]["percent"], 10.1)
 
+    def test_extract_principal_holders_promotes_embedded_header_rows(self) -> None:
+        html = """
+        <html>
+          <body>
+            <h2>Principal and Selling Shareholder</h2>
+            <table>
+              <tr>
+                <td></td>
+                <td>Ordinary Shares beneficially owned prior to this offering</td>
+                <td>Ordinary Shares beneficially owned prior to this offering</td>
+                <td>Ordinary Shares being sold in this offering</td>
+                <td>Ordinary Shares beneficially owned after this offering</td>
+                <td>Ordinary Shares beneficially owned after this offering</td>
+              </tr>
+              <tr>
+                <td>Name of Beneficial Shareholder</td>
+                <td>Number</td>
+                <td>Percent</td>
+                <td>Number</td>
+                <td>Number</td>
+                <td>Percent</td>
+              </tr>
+              <tr>
+                <td>SoftBank Group Corp.</td>
+                <td>1,025,233,999</td>
+                <td>100%</td>
+                <td>95,500,000</td>
+                <td>929,733,999</td>
+                <td>90.6%</td>
+              </tr>
+              <tr>
+                <td>Total</td>
+                <td>1,025,233,999</td>
+                <td>100%</td>
+                <td>95,500,000</td>
+                <td>929,733,999</td>
+                <td>90.6%</td>
+              </tr>
+            </table>
+          </body>
+        </html>
+        """
+
+        holders = extract_principal_holders(html)
+
+        self.assertEqual(len(holders), 1)
+        self.assertEqual(holders[0]["holder"], "SoftBank Group Corp.")
+        self.assertEqual(holders[0]["shares"], 1_025_233_999)
+        self.assertAlmostEqual(holders[0]["percent"], 100.0)
+
     def test_extract_principal_holders_rejects_toc_only_table(self) -> None:
         html = """
         <html>
