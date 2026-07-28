@@ -24,43 +24,48 @@ Codex may choose to update only this .md file to further clarify questions by pr
 
 ## Codex Handoff — 2026-07-28
 
-I moved to the live ARM failure path instead of asking for more analysis first.
+I did not need Claude yet. The Tuesday, July 28, 2026 ARM diagnostics were enough to justify one more contained SEC-resilience step.
 
-What I changed:
-- `ipo_tracker/insiders.py`
-  - Added targeted retry/backoff for the SEC owner-include Form 4 Atom feed request.
-  - Retry policy:
-    - up to 3 attempts total
-    - retries only on `429` and `503`
-    - honors `Retry-After` when present, capped to a short wait
-    - otherwise uses short bounded delays (`1s`, then `2s`)
-  - This patch is intentionally narrow: it only touches the initial owner-include feed fetch, not the rest of the parsing / reuse pipeline that is already behaving well.
-- `tests/test_insiders.py`
-  - Added regression coverage for:
-    1. a `429` on the first feed request followed by a successful retry
-    2. repeated `429` responses that still end in `feed_error`
-
-Why I chose this step without looping back first:
-- The user’s latest live diagnostics showed a concrete current failure on `ARM`:
+Current live signal:
+- `ARM` still ended in:
   - `insider_sales.lookup.status = feed_error`
-  - reason: `429 Too Many Requests` from SEC browse-edgar owner=include feed
-- That is a real production problem with a very contained mitigation.
-- The patch does not interfere with the already-confirmed repeat-refresh reuse logic.
+  - reason: `429 Too Many Requests` from the SEC owner-include Form 4 feed
+- That happened even after the first retry/backoff patch, so retry alone is not enough.
 
-Current state after this patch:
-- SEC/Form 4 repeat-refresh performance is already strongly confirmed live.
-- Market fallback instrumentation is already in place, but not yet exercised because the user’s later runs all showed successful Yahoo market data.
-- New immediate validation target is whether `ARM` (or another issuer that was previously rate-limited) stops hitting `feed_error` as often after the feed retry patch.
+What I changed next:
+- `ipo_tracker/insiders.py`
+  - Kept the existing retry/backoff logic.
+  - Added short cross-company pacing for the SEC owner-include feed requests:
+    - global minimum interval between feed requests: `0.35s`
+    - applies before each feed fetch attempt
+  - Goal: reduce the chance that a single dashboard refresh trips SEC throttling as it walks multiple issuers.
+- `tests/test_insiders.py`
+  - Relaxed the retry sleep assertions so they remain valid even with the new pacing sleeps in front of retry sleeps.
+  - The tests still assert the important parts:
+    - retry-after-rate-limit success path still works
+    - repeated rate limits still end in `feed_error`
+    - the retry backoff values (`1.0`, `2.0`) still occur
+
+Why this is the next smallest step:
+- It still only touches the initial owner-include feed fetch path.
+- It does not change document parsing, sale extraction, reuse logic, or DB behavior.
+- It directly targets the likely real-world cause: too many SEC feed requests too quickly across one refresh cycle.
+
+Current state now:
+- SEC/Form 4 repeat-refresh reuse is already strongly confirmed live.
+- SEC owner-include feed now has BOTH:
+  1. targeted retry/backoff on `429` / `503`
+  2. short pacing across issuers
+- Market fallback instrumentation is still waiting for a Yahoo rate-limit case to exercise it.
 
 Best next validation target:
-- Have the user run another SEC refresh and inspect `ARM` diagnostics.
+- Have the user run another SEC refresh and inspect `ARM` diagnostics again.
 - Interpret results as follows:
-  - If `ARM` now gets past `feed_error` and parses or reuses Form 4 history, the patch helped and we can decide whether document-level fetches need similar treatment later.
-  - If `ARM` still ends in `feed_error`, then the remaining issue is probably broader SEC rate-limit behavior, and the next Claude contribution should be about the smallest safe escalation path: retry tuning, lower fetch concurrency, or a feed-level cooldown/cache.
+  - If `ARM` gets past `feed_error`, this pacing step likely helped and we can pause SEC resilience work.
+  - If `ARM` still shows `feed_error`, the next likely contribution from Claude would be to choose between:
+    1. lower ownership-document parallelism,
+    2. a short per-CIK / per-feed cooldown cache after SEC 429,
+    3. broader SEC request throttling beyond the feed endpoint.
 
 If you want to help on the next round, the most useful Claude contribution would be:
-- analyze whether the next SEC resilience step should be:
-  1. lower parallelism / pacing for ownership document fetches,
-  2. a short per-CIK cooldown cache after feed 429s,
-  3. broader retry logic for document fetches too,
-but only if the new feed retry still leaves ARM in `feed_error`.
+- prioritize those three SEC-rate-limit escalation options by expected impact vs. added latency, but only if the new retry-plus-pacing pass still leaves `ARM` in `feed_error`.
