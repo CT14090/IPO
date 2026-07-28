@@ -17,6 +17,9 @@ MARKET_VALUE_KEYS = (
     "avg_volume_30d",
     "market_cap",
 )
+MARKET_PREVIOUS_AVAILABLE_NOTE = "Previous snapshot market data available: yes."
+MARKET_PREVIOUS_MISSING_NOTE = "Previous snapshot market data available: no."
+MARKET_REUSED_NOTE = "Reusing previous snapshot market data."
 
 
 def _safe_float(value: Any) -> float | None:
@@ -27,10 +30,22 @@ def _safe_float(value: Any) -> float | None:
         return None
 
 
+
+def _append_note(note: str, extra: str) -> str:
+    note = note.strip()
+    if not note:
+        return extra
+    if extra in note:
+        return note
+    return f"{note} {extra}"
+
+
+
 def market_data_has_values(data: dict[str, Any] | None) -> bool:
     if not isinstance(data, dict):
         return False
     return any(data.get(key) is not None for key in MARKET_VALUE_KEYS)
+
 
 
 def calculate_price_change_pct(ipo_price: Any, current_price: Any) -> float | None:
@@ -40,6 +55,7 @@ def calculate_price_change_pct(ipo_price: Any, current_price: Any) -> float | No
     if ipo is None or current is None or ipo <= 0:
         return None
     return round((current - ipo) / ipo * 100, 2)
+
 
 
 def merge_market_snapshot(previous_snapshot: dict[str, Any], latest_market: dict[str, Any]) -> dict[str, Any]:
@@ -58,7 +74,10 @@ def merge_market_snapshot(previous_snapshot: dict[str, Any], latest_market: dict
 
     previous_market = {key: previous_snapshot.get(key) for key in MARKET_VALUE_KEYS}
     if not market_data_has_values(previous_market):
-        return latest_market
+        return {
+            **latest_market,
+            "market_data_note": _append_note(note, MARKET_PREVIOUS_MISSING_NOTE),
+        }
 
     price_change_pct = previous_snapshot.get("price_change_pct")
     if price_change_pct is None:
@@ -74,8 +93,12 @@ def merge_market_snapshot(previous_snapshot: dict[str, Any], latest_market: dict
         "avg_volume_30d": previous_snapshot.get("avg_volume_30d"),
         "market_cap": previous_snapshot.get("market_cap"),
         "data_source": latest_market.get("data_source", "yfinance"),
-        "market_data_note": f"{note} Reusing previous snapshot market data.",
+        "market_data_note": _append_note(
+            _append_note(note, MARKET_PREVIOUS_AVAILABLE_NOTE),
+            MARKET_REUSED_NOTE,
+        ),
     }
+
 
 
 def fetch_market_data(ticker: str, ipo_date: str) -> dict[str, Any]:
@@ -112,7 +135,7 @@ def fetch_market_data(ticker: str, ipo_date: str) -> dict[str, Any]:
     try:
         stock = yf.Ticker(ticker)
 
-        # ── Current price + market cap ─────────────────────────────────────
+        # Current price + market cap
         info = stock.info or {}
         current_price = (
             _safe_float(info.get("currentPrice"))
@@ -127,8 +150,7 @@ def fetch_market_data(ticker: str, ipo_date: str) -> dict[str, Any]:
             except (TypeError, ValueError):
                 pass
 
-        # ── IPO-date closing price ─────────────────────────────────────────
-        # Fetch a 5-day window to handle weekends / market holidays
+        # IPO-date closing price. Fetch a 5-day window to handle weekends / holidays.
         ipo_date_obj = date.fromisoformat(ipo_date)
         hist_end = (ipo_date_obj + timedelta(days=5)).isoformat()
         hist = stock.history(start=ipo_date_obj.isoformat(), end=hist_end)
@@ -136,9 +158,9 @@ def fetch_market_data(ticker: str, ipo_date: str) -> dict[str, Any]:
         if not hist.empty:
             ipo_price = _safe_float(hist["Close"].iloc[0])
 
-        # ── 30-day average daily volume ────────────────────────────────────
+        # 30-day average daily volume.
         vol_end = date.today()
-        vol_start = vol_end - timedelta(days=45)  # extra buffer for trading days
+        vol_start = vol_end - timedelta(days=45)
         vol_hist = stock.history(
             start=vol_start.isoformat(), end=vol_end.isoformat()
         )
@@ -148,7 +170,6 @@ def fetch_market_data(ticker: str, ipo_date: str) -> dict[str, Any]:
             if len(recent) > 0:
                 avg_volume_30d = int(recent.mean())
 
-        # ── % change from IPO price to current ────────────────────────────
         price_change_pct = calculate_price_change_pct(ipo_price, current_price)
 
         note = "Live data from Yahoo Finance via yfinance"
