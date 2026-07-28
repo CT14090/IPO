@@ -24,48 +24,46 @@ Codex may choose to update only this .md file to further clarify questions by pr
 
 ## Codex Handoff — 2026-07-28
 
-I did not need Claude yet. The Tuesday, July 28, 2026 ARM diagnostics were enough to justify one more contained SEC-resilience step.
+Tuesday, July 28, 2026 live validation after the retry-plus-pacing patch succeeded for `ARM`.
 
-Current live signal:
-- `ARM` still ended in:
-  - `insider_sales.lookup.status = feed_error`
-  - reason: `429 Too Many Requests` from the SEC owner-include Form 4 feed
-- That happened even after the first retry/backoff patch, so retry alone is not enough.
+What the new live diagnostics prove:
+- `ARM` no longer ends in `feed_error`.
+- It now shows:
+  - `insider_sales.lookup.status = sales_parsed`
+  - `feed_entries = 29`
+  - `candidate_filings = 28`
+  - `documents_fetched = 28`
+  - `xml_documents = 28`
+  - `transactions_parsed = 39`
+  - `filing_count = 17`
+  - `total_shares_sold = 302,915`
+- This is strong evidence that the combination of:
+  1. feed retry/backoff, and
+  2. short cross-company pacing
+  fixed the specific SEC owner-include feed throttling problem we were seeing on ARM.
 
-What I changed next:
-- `ipo_tracker/insiders.py`
-  - Kept the existing retry/backoff logic.
-  - Added short cross-company pacing for the SEC owner-include feed requests:
-    - global minimum interval between feed requests: `0.35s`
-    - applies before each feed fetch attempt
-  - Goal: reduce the chance that a single dashboard refresh trips SEC throttling as it walks multiple issuers.
-- `tests/test_insiders.py`
-  - Relaxed the retry sleep assertions so they remain valid even with the new pacing sleeps in front of retry sleeps.
-  - The tests still assert the important parts:
-    - retry-after-rate-limit success path still works
-    - repeated rate limits still end in `feed_error`
-    - the retry backoff values (`1.0`, `2.0`) still occur
+Additional useful live signal from the same JSON:
+- `ARM` lock-up parsing also improved versus the earlier fallback state.
+- `lockup_source` now reads:
+  - `Lock-Up Restrictions section: Regex match: for a period of 180 days`
+  instead of:
+  - `No filing text available`
+- Principal holders are still not being parsed cleanly for ARM, so that part remains a separate quality gap.
 
-Why this is the next smallest step:
-- It still only touches the initial owner-include feed fetch path.
-- It does not change document parsing, sale extraction, reuse logic, or DB behavior.
-- It directly targets the likely real-world cause: too many SEC feed requests too quickly across one refresh cycle.
+What I updated after this validation:
+- `TASK_BOARD.md`
+  - marked the ARM SEC feed path as live-confirmed successful after retry plus pacing
+  - moved that item out of the unresolved bucket conceptually
+- No new code was needed after seeing this JSON; this was validation-only.
 
-Current state now:
-- SEC/Form 4 repeat-refresh reuse is already strongly confirmed live.
-- SEC owner-include feed now has BOTH:
-  1. targeted retry/backoff on `429` / `503`
-  2. short pacing across issuers
-- Market fallback instrumentation is still waiting for a Yahoo rate-limit case to exercise it.
+Current project state:
+- SEC/Form 4 refresh reuse: confirmed live
+- SEC owner-include 429 resilience for ARM: confirmed live
+- Market fallback instrumentation: still waiting for a Yahoo rate-limit case to exercise it
+- Remaining notable parser-quality gap: ARM principal holders still empty / not cleanly parsed
 
-Best next validation target:
-- Have the user run another SEC refresh and inspect `ARM` diagnostics again.
-- Interpret results as follows:
-  - If `ARM` gets past `feed_error`, this pacing step likely helped and we can pause SEC resilience work.
-  - If `ARM` still shows `feed_error`, the next likely contribution from Claude would be to choose between:
-    1. lower ownership-document parallelism,
-    2. a short per-CIK / per-feed cooldown cache after SEC 429,
-    3. broader SEC request throttling beyond the feed endpoint.
-
-If you want to help on the next round, the most useful Claude contribution would be:
-- prioritize those three SEC-rate-limit escalation options by expected impact vs. added latency, but only if the new retry-plus-pacing pass still leaves `ARM` in `feed_error`.
+If Claude is needed next, the most useful contribution would NOT be SEC-rate-limit work anymore.
+The most useful next analysis target would be either:
+1. principal-holder parsing quality on names like `ARM`, or
+2. whether we should now move to shares-outstanding / locked-percentage context,
+but only if we decide that parser quality is good enough to support that.
