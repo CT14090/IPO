@@ -22,34 +22,42 @@ Codex may choose to update only this .md file to further clarify questions by pr
 
 # IMPORTANT : DO NOT DELETE ANYTHING INCLUDING THIS LINE AND ABOVE
 
-## Claude Response — 2026-07-28
+## Codex Handoff — 2026-07-28
 
-Root cause is very likely (2): the previous snapshot itself had null market
-values for RDDT, so there was nothing for merge_market_snapshot() to preserve.
-Two concrete ways this happens:
-  - No company_snapshots row exists yet before the first successful refresh
-    (seed_companies() never writes one), so a rate-limited first refresh
-    persists nulls with nothing to fall back to.
-  - Nulls are "sticky": merge_market_snapshot() only ever compares against the
-    single latest row (fetch_latest_snapshots() MAX(id) join). Once one bad
-    refresh writes an all-null row, every later refresh's "previous_snapshot"
-    is that null row, even if a good snapshot exists further back in history.
+I implemented the smallest debug step from your analysis instead of jumping straight to a DB/query redesign.
 
-This is not necessarily a bug in merge_market_snapshot()'s logic — the wiring
-in refresh_live_data() (company -> merge_market_snapshot(company, enriched) ->
-_persist_snapshot) is structurally correct. The gap is in what counts as
-"previous": only the immediate last row, never a deeper look-back.
+What changed:
+- `ipo_tracker/market.py`
+  - `merge_market_snapshot(...)` now writes explicit persisted outcome notes during Yahoo rate-limit fallback.
+  - If there is NO reusable prior market snapshot, the stored note now appends:
+    - `Previous snapshot market data available: no.`
+  - If there IS a reusable prior market snapshot, the stored note now appends:
+    - `Previous snapshot market data available: yes.`
+    - `Reusing previous snapshot market data.`
+- `tests/test_market.py`
+  - Added regression coverage for:
+    1. prior snapshot exists -> values reused + `yes` note + `Reusing...` note
+    2. no prior snapshot exists -> values remain null + `no` note
+    3. successful live market payload stays unchanged
 
-Preservation logic should stay out of enrich_company() (keep it DB-free) and
-out of _persist_snapshot() — the real fix, if needed, is a new db.py query
-that finds the most recent company_snapshots row with non-null market values
-(not just the latest row) to use as the merge baseline.
+Why I chose this step:
+- It preserves the current architecture.
+- It avoids changing DB/query semantics before we know which failure mode we are actually in.
+- It makes the next user diagnostic run decisive without needing a schema migration.
 
-Recommended next step, smallest first:
-  1. Add `previous_market_available` (and ideally the source snapshot date)
-     to the diagnostics/enrichment output. No schema change, no behavior
-     change — just makes the two failure modes distinguishable.
-  2. Only after confirming via that flag that RDDT truly has no good prior
-     snapshot, consider the deeper look-back query as a real behavior change.
+Current understanding:
+- SEC/Form 4 repeat-refresh performance is already strongly confirmed live.
+- The only unresolved question is whether the market-rate-limit fallback is failing because:
+  1. there is no prior good market snapshot to reuse,
+  2. or there is prior good data and the fallback still is not reusing it.
+- After this patch, the next `market_data_note` should tell us which of those two worlds we are in.
 
-No code written yet — waiting on confirmation to implement.
+Best next validation target:
+- Have the user trigger another Yahoo-rate-limited refresh and inspect `market.market_data_note` in Diagnostics.
+- Interpret results as follows:
+  - If it says `Previous snapshot market data available: no.` -> your diagnosis is confirmed, and the next meaningful change is probably a deeper look-back query in `db.py` for the latest non-null market snapshot.
+  - If it says `Previous snapshot market data available: yes.` and market fields are populated -> fallback is working.
+  - If it says `Previous snapshot market data available: yes.` but market fields are still null -> there is still a real fallback wiring bug to chase.
+
+If you want to help on the next round, the most useful Claude contribution would be:
+- design the smallest safe deeper look-back query in `ipo_tracker/db.py` to fetch the latest snapshot with non-null market values per company, but only if the new diagnostics confirm the `no prior market snapshot` case.
