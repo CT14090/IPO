@@ -45,14 +45,17 @@
 - When a previous good market snapshot exists, `ipo_tracker/market.py` also appends `Reusing previous snapshot market data.` to the stored note while preserving the prior values.
 - `ipo_tracker/insiders.py` retries the SEC owner-include Form 4 Atom feed up to 3 times for `429` and `503` responses, with short bounded backoff and `Retry-After` header support.
 - `ipo_tracker/insiders.py` spaces owner-include feed requests across companies with a short global minimum interval before each feed fetch, which appears to have resolved the ARM feed-error path in live use.
+- `ipo_tracker/sec.py` now promotes embedded multi-row principal-holder header rows into usable column names before canonicalizing records. This targets ARM-style tables where the real `Name / Number / Percent` headers sit inside the first body rows instead of in clean `<th>` columns.
 
 ## Covered By Tests
-- `tests/test_sec.py` covers lock-up extraction, fallback behavior, long-window early-release percent parsing, greenshoe disambiguation, early-release and earnings-trigger detection, 8-K amendment detection, cover-page IPO date extraction, holder parsing, trading-day offsets, effective unlock date resolution, and confidence scoring.
+- `tests/test_sec.py` covers lock-up extraction, fallback behavior, long-window early-release percent parsing, greenshoe disambiguation, early-release and earnings-trigger detection, 8-K amendment detection, cover-page IPO date extraction, holder parsing, embedded multi-row holder-header promotion, trading-day offsets, effective unlock date resolution, and confidence scoring.
 - `tests/test_discovery.py` covers source-name fallback and nameless-candidate skipping.
 - `tests/test_insiders.py` now covers owner-include Form 4 feed parsing, post-unlock filtering, direct XML filing links, HTML-to-XML companion fallback, zero-result lookup metadata, retry-after-rate-limit success, repeated-rate-limit feed failure, incremental history reuse when there are no new filings, incremental merge behavior when a newer filing appears, and insider-sale summary math that ignores embedded lookup metadata.
 - `tests/test_market.py` covers market-snapshot reuse when a previous good snapshot exists, explicit no-previous-snapshot note behavior, and the unchanged successful-market-data path.
 
 ## Still Open
+- Live-validate the new ARM-style embedded-header holder parser by checking whether `ARM` `principal_holders` is no longer empty after refresh.
+- If `ARM` still comes back with `principal_holders = []`, inspect the remaining live table structure rather than the SEC feed path, because the SEC feed problem is already resolved.
 - Live-validate the new market fallback diagnostics by checking whether `market_data_note` explicitly says `Previous snapshot market data available: yes.` or `Previous snapshot market data available: no.` during a Yahoo rate-limit refresh.
 - If the diagnostics show `Previous snapshot market data available: no.`, decide whether to add a deeper look-back query in `ipo_tracker/db.py` for the most recent non-null market snapshot instead of only the immediate latest snapshot.
 - If the diagnostics show `Previous snapshot market data available: yes.` but market values are still null, debug the merge path further because that would indicate a real fallback bug rather than missing history.
@@ -75,6 +78,7 @@
 - Confirm the app still does not crash if one SEC request fails and that the sidebar still names the affected ticker.
 - Confirm the `Diagnostics` tab includes `calendar_unlock_date`, `effective_unlock_date`, and the `insider_sales` section with `lookup`, `summary`, and `transactions`.
 - Confirm `RDDT` still shows `effective_unlock_date = 2024-08-09` and live parsed Form 4 sales after the incremental-refresh change.
+- Refresh `ARM` and inspect whether `principal_holders` now contains real holder rows instead of an empty list.
 - Reproduce a Yahoo Finance rate-limit scenario and inspect `market_data_note`.
 - If `market_data_note` says `Previous snapshot market data available: no.`, treat the issue as missing reusable history rather than a broken merge.
 - If `market_data_note` says `Previous snapshot market data available: yes.` but market values are still empty, treat the issue as a real fallback bug.
