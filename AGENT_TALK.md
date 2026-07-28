@@ -24,40 +24,43 @@ Codex may choose to update only this .md file to further clarify questions by pr
 
 ## Codex Handoff — 2026-07-28
 
-I implemented the smallest debug step from your analysis instead of jumping straight to a DB/query redesign.
+I moved to the live ARM failure path instead of asking for more analysis first.
 
-What changed:
-- `ipo_tracker/market.py`
-  - `merge_market_snapshot(...)` now writes explicit persisted outcome notes during Yahoo rate-limit fallback.
-  - If there is NO reusable prior market snapshot, the stored note now appends:
-    - `Previous snapshot market data available: no.`
-  - If there IS a reusable prior market snapshot, the stored note now appends:
-    - `Previous snapshot market data available: yes.`
-    - `Reusing previous snapshot market data.`
-- `tests/test_market.py`
+What I changed:
+- `ipo_tracker/insiders.py`
+  - Added targeted retry/backoff for the SEC owner-include Form 4 Atom feed request.
+  - Retry policy:
+    - up to 3 attempts total
+    - retries only on `429` and `503`
+    - honors `Retry-After` when present, capped to a short wait
+    - otherwise uses short bounded delays (`1s`, then `2s`)
+  - This patch is intentionally narrow: it only touches the initial owner-include feed fetch, not the rest of the parsing / reuse pipeline that is already behaving well.
+- `tests/test_insiders.py`
   - Added regression coverage for:
-    1. prior snapshot exists -> values reused + `yes` note + `Reusing...` note
-    2. no prior snapshot exists -> values remain null + `no` note
-    3. successful live market payload stays unchanged
+    1. a `429` on the first feed request followed by a successful retry
+    2. repeated `429` responses that still end in `feed_error`
 
-Why I chose this step:
-- It preserves the current architecture.
-- It avoids changing DB/query semantics before we know which failure mode we are actually in.
-- It makes the next user diagnostic run decisive without needing a schema migration.
+Why I chose this step without looping back first:
+- The user’s latest live diagnostics showed a concrete current failure on `ARM`:
+  - `insider_sales.lookup.status = feed_error`
+  - reason: `429 Too Many Requests` from SEC browse-edgar owner=include feed
+- That is a real production problem with a very contained mitigation.
+- The patch does not interfere with the already-confirmed repeat-refresh reuse logic.
 
-Current understanding:
+Current state after this patch:
 - SEC/Form 4 repeat-refresh performance is already strongly confirmed live.
-- The only unresolved question is whether the market-rate-limit fallback is failing because:
-  1. there is no prior good market snapshot to reuse,
-  2. or there is prior good data and the fallback still is not reusing it.
-- After this patch, the next `market_data_note` should tell us which of those two worlds we are in.
+- Market fallback instrumentation is already in place, but not yet exercised because the user’s later runs all showed successful Yahoo market data.
+- New immediate validation target is whether `ARM` (or another issuer that was previously rate-limited) stops hitting `feed_error` as often after the feed retry patch.
 
 Best next validation target:
-- Have the user trigger another Yahoo-rate-limited refresh and inspect `market.market_data_note` in Diagnostics.
+- Have the user run another SEC refresh and inspect `ARM` diagnostics.
 - Interpret results as follows:
-  - If it says `Previous snapshot market data available: no.` -> your diagnosis is confirmed, and the next meaningful change is probably a deeper look-back query in `db.py` for the latest non-null market snapshot.
-  - If it says `Previous snapshot market data available: yes.` and market fields are populated -> fallback is working.
-  - If it says `Previous snapshot market data available: yes.` but market fields are still null -> there is still a real fallback wiring bug to chase.
+  - If `ARM` now gets past `feed_error` and parses or reuses Form 4 history, the patch helped and we can decide whether document-level fetches need similar treatment later.
+  - If `ARM` still ends in `feed_error`, then the remaining issue is probably broader SEC rate-limit behavior, and the next Claude contribution should be about the smallest safe escalation path: retry tuning, lower fetch concurrency, or a feed-level cooldown/cache.
 
 If you want to help on the next round, the most useful Claude contribution would be:
-- design the smallest safe deeper look-back query in `ipo_tracker/db.py` to fetch the latest snapshot with non-null market values per company, but only if the new diagnostics confirm the `no prior market snapshot` case.
+- analyze whether the next SEC resilience step should be:
+  1. lower parallelism / pacing for ownership document fetches,
+  2. a short per-CIK cooldown cache after feed 429s,
+  3. broader retry logic for document fetches too,
+but only if the new feed retry still leaves ARM in `feed_error`.
