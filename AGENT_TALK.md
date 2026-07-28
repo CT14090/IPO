@@ -24,56 +24,38 @@ Codex may choose to update only this .md file to further clarify questions by pr
 
 ## Codex Handoff — 2026-07-28
 
-Current state after the latest work on Tuesday, July 28, 2026:
+A deploy-blocking regression was found and fixed on Tuesday, July 28, 2026.
 
-1. The SEC/Form 4 feed issue is already fixed and live-confirmed.
-- Problem was not the issuer logic anymore; it was SEC throttling on the owner-include Atom feed for names like `ARM`.
-- Codex fixed that with:
-  - bounded retry/backoff for `429` and `503`
-  - short cross-company pacing between feed requests
-- Live proof already seen in ARM diagnostics:
-  - `insider_sales.lookup.status = sales_parsed`
-  - `feed_entries = 29`
-  - `candidate_filings = 28`
-  - `xml_documents = 28`
-  - `transactions_parsed = 39`
+What broke:
+- Streamlit failed at import time on:
+  - `from ipo_tracker.sec import enrich_company`
+- Root cause was not Streamlit config and not the new SEC logic itself.
+- `ipo_tracker/sec.py` on `main` had become physically truncated during the last edit.
+- The file ended mid-function inside `determine_effective_unlock_date(...)`, before the rest of that function and before the `enrich_company(...)` definition.
+- Because the Python module was incomplete, importing `ipo_tracker.sec` failed and surfaced as the app-level `ImportError`.
 
-2. We have now moved on to the next requested item: principal-holder parsing quality.
-- Commit already on `main`:
-  - `c867568` `Improve principal holder parsing for embedded header tables`
-- What that parser change does:
-  - recognizes more holder-header placeholder phrases such as `Name of Beneficial Shareholder`
-  - treats `Number` as a shares-like column when the table embeds minimal subheaders
-  - avoids overwriting a stronger numeric shares/percent value with a later weaker duplicate
-  - promotes embedded multi-row header rows into real DataFrame columns before canonicalizing holder rows
-- This specifically targets SEC prospectus tables like ARM where the real `Name / Number / Percent` labels appear in the first body rows rather than as clean `<th>` headers.
+What Codex did:
+- compared the current broken `sec.py` with the last known-good version before the truncation
+- restored the missing tail of the module while preserving the newer embedded-header principal-holder parsing changes already on `main`
+- restore commit:
+  - `1dfaded` `Restore truncated sec module tail`
 
-3. I also added regression coverage so this work is not only code-without-guardrails.
-- New commit on `main`:
-  - `6de89b3` `Add regression test for embedded principal holder headers`
-- The new unit test uses an ARM-shaped simplified table with:
-  - a top row describing pre/post offering blocks
-  - a second row with `Name of Beneficial Shareholder | Number | Percent | ...`
-  - a `SoftBank Group Corp.` data row
-- Expected result in the test:
-  - parser returns one real holder row
-  - `holder = SoftBank Group Corp.`
-  - `shares = 1,025,233,999`
-  - `percent = 100.0`
+What is restored by that fix:
+- completion of `determine_effective_unlock_date(...)`
+- the full `enrich_company(...)` helper
+- the module can now parse/import again unless there is a separate runtime issue
 
-4. Docs are updated too.
-- `TASK_BOARD.md` now records that:
-  - the embedded-header parser improvement is implemented in `main`
-  - the next live validation target is ARM `principal_holders`
-- If Claude needs to inspect project status, the board is up to date.
+Important interpretation:
+- this was a file-corruption / incomplete-commit style regression
+- it does NOT invalidate the earlier SEC feed retry/pacing work
+- it does NOT invalidate the embedded principal-holder parser work conceptually
+- it simply means the repo had a broken `sec.py` artifact that prevented any of that code from loading
 
-What remains right now:
-- We still do NOT have live evidence yet that ARM `principal_holders` is populated after this parser change.
-- The next validation target is straightforward:
-  - refresh SEC data
-  - open ARM diagnostics
-  - inspect whether `principal_holders` is still `[]` or now contains real rows
+Current next validation target:
+1. redeploy / rerun the app and confirm import-time startup succeeds again
+2. then resume the previously planned ARM holder validation:
+   - refresh SEC data
+   - inspect `ARM` diagnostics
+   - check whether `principal_holders` is still `[]` or now populated
 
-What Claude would be most useful for next, only if the live ARM validation still fails:
-- analyze the exact remaining ARM holder-table structure and explain why the promoted-header path still misses it
-- otherwise no further analysis is needed before the next validation step
+Only if the app starts cleanly but ARM holder rows are still empty would Claude analysis be useful again.
