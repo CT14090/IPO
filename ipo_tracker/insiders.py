@@ -5,6 +5,7 @@ from datetime import date
 from functools import lru_cache
 from pathlib import PurePosixPath
 import re
+import time
 from typing import Any
 from urllib.parse import urljoin
 from xml.etree import ElementTree as ET
@@ -23,6 +24,7 @@ OWNER_INCLUDE_FORM4_FEED = (
     "?action=getcompany&CIK={cik}&type=4&dateb=&owner=include"
     "&count={count}&output=atom"
 )
+OWNER_INCLUDE_FEED_MAX_ATTEMPTS = 3
 SALE_TRANSACTION_CODES = {"S"}
 
 
@@ -108,12 +110,44 @@ def _extract_form_from_entry(title: str, summary: str) -> str:
     return match.group(1).upper() if match else ""
 
 
+
+def _should_retry_feed_request(exc: requests.RequestException) -> bool:
+    response = getattr(exc, "response", None)
+    if response is None:
+        return False
+    return response.status_code in {429, 503}
+
+
+
+def _retry_delay_seconds(exc: requests.RequestException, attempt: int) -> float:
+    response = getattr(exc, "response", None)
+    if response is not None:
+        retry_after = response.headers.get("Retry-After")
+        if retry_after:
+            try:
+                return max(0.0, min(float(retry_after), 5.0))
+            except ValueError:
+                pass
+    return float(min(attempt, 3))
+
+
 @lru_cache(maxsize=256)
 def _fetch_owner_include_feed(normalized_cik: str) -> str:
     url = OWNER_INCLUDE_FORM4_FEED.format(cik=normalized_cik, count=OWNER_INCLUDE_FORM4_COUNT)
-    response = requests.get(url, headers=_sec_headers(), timeout=30)
-    response.raise_for_status()
-    return response.text
+    last_exc: requests.RequestException | None = None
+    for attempt in range(1, OWNER_INCLUDE_FEED_MAX_ATTEMPTS + 1):
+        try:
+            response = requests.get(url, headers=_sec_headers(), timeout=30)
+            response.raise_for_status()
+            return response.text
+        except requests.RequestException as exc:
+            last_exc = exc
+            if attempt >= OWNER_INCLUDE_FEED_MAX_ATTEMPTS or not _should_retry_feed_request(exc):
+                raise
+            time.sleep(_retry_delay_seconds(exc, attempt))
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("Owner-include Form 4 feed request failed without a captured exception.")
 
 
 def _parse_form4_feed_entries(feed_xml: str) -> list[dict[str, str]]:
