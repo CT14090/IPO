@@ -761,14 +761,23 @@ def _first_share_candidate(values: list[str]) -> int | None:
 
 
 def _first_percent_candidate(values: list[str]) -> float | None:
+    fallback_percent: float | None = None
     for value in values:
         cleaned = _clean_cell_text(value)
-        if "%" not in cleaned:
+        if "%" in cleaned:
+            parsed = _parse_holder_measure("percent", cleaned)
+            if not isinstance(parsed, (int, float)):
+                continue
+            numeric = float(parsed)
+            return numeric
+        if fallback_percent is not None:
             continue
-        parsed = _parse_holder_measure("percent", cleaned)
-        if isinstance(parsed, (int, float)):
-            return float(parsed)
-    return None
+        if not re.fullmatch(r"\d+(?:\.\d+)?", cleaned):
+            continue
+        numeric = float(cleaned)
+        if 0.0 <= numeric <= 100.0:
+            fallback_percent = numeric
+    return fallback_percent
 
 
 def _canonicalize_holder_row(row: pd.Series) -> dict[str, Any]:

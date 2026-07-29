@@ -58,6 +58,8 @@
 - `ipo_tracker/sec.py` now scans all non-spacer value cells in ARM-style holder rows for the first explicit percent, so the spacer-table fast path no longer drops `percent` when multi-column ownership rows are present.
 - `ipo_tracker/sec.py` now backfills missing `shares` and `percent` from row values even when the promoted-header path does not map every column name cleanly.
 - `tests/test_sec.py` now covers an ARM-style spacer-table regression and still asserts that we preserve the first percent in row order, which is currently the pre-offering ownership percent.
+- `ipo_tracker/sec.py` now falls back to the first plausible bare numeric percent cell when SEC table normalization strips `%` signs from ARM-style holder rows, while still preferring explicit percent cells first.
+- `tests/test_sec.py` now covers the ARM-style numeric-percent regression where percent values arrive as plain `100` / `90.6` cells instead of `100%` / `90.6%`.
 - `ipo_tracker/sec.py` had a later truncation regression on Tuesday, July 28, 2026; the missing bottom portion of `determine_effective_unlock_date(...)` and `enrich_company(...)` has now been restored on `main` so the module can import again.
 
 ## Covered By Tests
@@ -68,10 +70,7 @@
 - `tests/test_db.py` covers ticker-keyed market history reuse and rebuilding market history from older snapshots.
 
 ## Still Open
-- ARM percent extraction is still not live-confirmed: the latest diagnostics show `principal_holders[0]` with `holder` and `shares` but no `percent` key yet.
-- The most likely remaining root cause is narrow and code-level: `_first_percent_candidate(...)` still appears to require a literal `%` symbol, so it likely misses bare numeric percent cells such as `100` or `90.6` after SEC table normalization.
-- Apply the percent fallback fix in `ipo_tracker/sec.py`: prefer explicit percent cells first, but if none exist, accept the first plausible bare numeric percentage candidate in the `0..100` range.
-- Add a regression in `tests/test_sec.py` for the ARM-style row where percent values are plain numeric cells with no `%` sign.
+- ARM percent extraction is still not live-confirmed after the numeric-percent fallback patch: the code and regression are in `main`, but the latest production refresh has not yet been re-run from this session.
 - Live-validate whether ARM now reports `Previous snapshot market data available: yes.` after the new ticker-keyed `company_market_history` fallback.
 - If the diagnostics still show `Previous snapshot market data available: no.` after the ticker-keyed history fallback change, debug why no prior non-null ARM market values exist in the deployed local DB.
 - Live-validate the ARM holder cleanup by confirming `principal_holders[0]` now contains only canonical keys such as `holder`, `shares`, and `percent`, with no stray numeric-string keys.
