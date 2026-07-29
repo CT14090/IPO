@@ -55,10 +55,13 @@
 - `ipo_tracker/market.py` now keeps a short-lived in-process cache for market fetches, so repeat refreshes in the same deployed app process can reuse the prior Yahoo response instead of redoing all market calls immediately.
 - `ipo_tracker/db.py` now stores last-good market values in a ticker-keyed `company_market_history` table, backfills that table from older snapshots during initialization, and uses it when the newest snapshot has null market fields.
 - `tests/test_db.py` now covers both direct market-history reuse and legacy-history backfill from older snapshots before a failed refresh.
+- `ipo_tracker/sec.py` now scans all non-spacer value cells in ARM-style holder rows for the first explicit percent, so the spacer-table fast path no longer drops `percent` when multi-column ownership rows are present.
+- `ipo_tracker/sec.py` now backfills missing `shares` and `percent` from row values even when the promoted-header path does not map every column name cleanly.
+- `tests/test_sec.py` now covers an ARM-style spacer-table regression and still asserts that we preserve the first percent in row order, which is currently the pre-offering ownership percent.
 - `ipo_tracker/sec.py` had a later truncation regression on Tuesday, July 28, 2026; the missing bottom portion of `determine_effective_unlock_date(...)` and `enrich_company(...)` has now been restored on `main` so the module can import again.
 
 ## Covered By Tests
-- `tests/test_sec.py` covers lock-up extraction, fallback behavior, long-window early-release percent parsing, greenshoe disambiguation, early-release and earnings-trigger detection, 8-K amendment detection, cover-page IPO date extraction, holder parsing, embedded multi-row holder-header promotion, trading-day offsets, effective unlock date resolution, confidence scoring, suppression of stray numeric holder keys for the ARM-style embedded-header case, and truthful confidence details when filing HTML is unavailable.
+- `tests/test_sec.py` covers lock-up extraction, fallback behavior, long-window early-release percent parsing, greenshoe disambiguation, early-release and earnings-trigger detection, 8-K amendment detection, cover-page IPO date extraction, holder parsing, embedded multi-row holder-header promotion, ARM-style spacer-table percent retention, trading-day offsets, effective unlock date resolution, confidence scoring, suppression of stray numeric holder keys for the ARM-style embedded-header case, and truthful confidence details when filing HTML is unavailable.
 - `tests/test_discovery.py` covers source-name fallback and nameless-candidate skipping.
 - `tests/test_insiders.py` now covers owner-include Form 4 feed parsing, post-unlock filtering, direct XML filing links, HTML-to-XML companion fallback, zero-result lookup metadata, retry-after-rate-limit success, repeated-rate-limit feed failure, incremental history reuse when there are no new filings, incremental merge behavior when a newer filing appears, and insider-sale summary math that ignores embedded lookup metadata.
 - `tests/test_market.py` covers market-snapshot reuse when a previous good snapshot exists, explicit no-previous-snapshot note behavior, unchanged successful-market-data behavior, and note-preservation when a cached market failure is later merged with reusable snapshot data.
@@ -68,7 +71,8 @@
 - Live-validate whether ARM now reports `Previous snapshot market data available: yes.` after the new ticker-keyed `company_market_history` fallback.
 - If the diagnostics still show `Previous snapshot market data available: no.` after the ticker-keyed history fallback change, debug why no prior non-null ARM market values exist in the deployed local DB.
 - Live-validate the ARM holder cleanup by confirming `principal_holders[0]` now contains only canonical keys such as `holder`, `shares`, and `percent`, with no stray numeric-string keys.
-- Decide whether the holder parser should prefer the post-offering percent (`90.6%`) or preserve only the pre-offering percent (`100%`) when both are present in ARM-style tables.
+- Live-validate whether ARM now shows a non-null `percent` in `principal_holders[0]` after the spacer-table percent-retention fix.
+- Decide later whether we still want to switch ARM-style percent semantics from the current pre-offering default (`100%`) to the post-offering figure (`90.6%`).
 - Live-validate the new SEC filing-fetch diagnostics by checking whether an ARM-style miss now says `Prospectus fetch failed during refresh: HTTP ...` instead of falsely claiming the lock-up and IPO date were parsed from filing text.
 - Live-validate the new market fallback diagnostics by checking whether `market_data_note` explicitly says `Previous snapshot market data available: yes.` or `Previous snapshot market data available: no.` during a Yahoo rate-limit refresh.
 - Decide whether Yahoo rate-limit resilience needs an additional cache or retry/backoff layer beyond snapshot preservation plus in-process reuse.
@@ -93,6 +97,7 @@
 - Confirm the app starts cleanly again after the restored `sec.py` tail.
 - Refresh `ARM` and inspect whether `principal_holders` now contains real holder rows instead of an empty list.
 - For `ARM`, inspect whether `principal_holders[0]` now has only canonical keys and no stray numeric-string placeholders.
+- For `ARM`, inspect whether `principal_holders[0].percent` is now present and non-null after the spacer-table percent-retention fix.
 - Reproduce a Yahoo Finance rate-limit scenario and inspect `market_data_note`.
 - Confirm whether `market_data_note` now backfills to `Previous snapshot market data available: yes.` after the new ticker-keyed market-history fallback.
 - If `market_data_note` still says `Previous snapshot market data available: no.` after the ticker-keyed history fallback change, treat that as a real deployed-history gap rather than the old snapshot-selection bug.
