@@ -53,7 +53,8 @@
 - `ipo_tracker/sec.py` now drops raw numeric placeholder columns and bare `%` artifacts during holder-row canonicalization so wide ARM-style tables do not leak keys like `"8"` or `"20"` into the parsed object.
 - `ipo_tracker/sec.py` now retries SEC prospectus text requests for transient `429` and `503` responses, records the fetch failure reason in notes, and stops claiming that lock-up terms or IPO dates were parsed from filing text when the HTML was unavailable during refresh.
 - `ipo_tracker/market.py` now keeps a short-lived in-process cache for market fetches, so repeat refreshes in the same deployed app process can reuse the prior Yahoo response instead of redoing all market calls immediately.
-- `ipo_tracker/db.py` now backfills market fields from the latest non-null historical snapshot when the most recent snapshot is null-only, so market fallback reuse is no longer limited to the immediately previous snapshot.
+- `ipo_tracker/db.py` now stores last-good market values in a ticker-keyed `company_market_history` table, backfills that table from older snapshots during initialization, and uses it when the newest snapshot has null market fields.
+- `tests/test_db.py` now covers both direct market-history reuse and legacy-history backfill from older snapshots before a failed refresh.
 - `ipo_tracker/sec.py` had a later truncation regression on Tuesday, July 28, 2026; the missing bottom portion of `determine_effective_unlock_date(...)` and `enrich_company(...)` has now been restored on `main` so the module can import again.
 
 ## Covered By Tests
@@ -61,10 +62,11 @@
 - `tests/test_discovery.py` covers source-name fallback and nameless-candidate skipping.
 - `tests/test_insiders.py` now covers owner-include Form 4 feed parsing, post-unlock filtering, direct XML filing links, HTML-to-XML companion fallback, zero-result lookup metadata, retry-after-rate-limit success, repeated-rate-limit feed failure, incremental history reuse when there are no new filings, incremental merge behavior when a newer filing appears, and insider-sale summary math that ignores embedded lookup metadata.
 - `tests/test_market.py` covers market-snapshot reuse when a previous good snapshot exists, explicit no-previous-snapshot note behavior, unchanged successful-market-data behavior, and note-preservation when a cached market failure is later merged with reusable snapshot data.
+- `tests/test_db.py` covers ticker-keyed market history reuse and rebuilding market history from older snapshots.
 
 ## Still Open
-- Live-validate whether ARM now reports `Previous snapshot market data available: yes.` once historical market values are backfilled from the latest non-null snapshot.
-- If the diagnostics still show `Previous snapshot market data available: no.` after the backfill change, debug why the historical non-null snapshot is not being found.
+- Live-validate whether ARM now reports `Previous snapshot market data available: yes.` after the new ticker-keyed `company_market_history` fallback.
+- If the diagnostics still show `Previous snapshot market data available: no.` after the ticker-keyed history fallback change, debug why no prior non-null ARM market values exist in the deployed local DB.
 - Live-validate the ARM holder cleanup by confirming `principal_holders[0]` now contains only canonical keys such as `holder`, `shares`, and `percent`, with no stray numeric-string keys.
 - Decide whether the holder parser should prefer the post-offering percent (`90.6%`) or preserve only the pre-offering percent (`100%`) when both are present in ARM-style tables.
 - Live-validate the new SEC filing-fetch diagnostics by checking whether an ARM-style miss now says `Prospectus fetch failed during refresh: HTTP ...` instead of falsely claiming the lock-up and IPO date were parsed from filing text.
@@ -92,8 +94,8 @@
 - Refresh `ARM` and inspect whether `principal_holders` now contains real holder rows instead of an empty list.
 - For `ARM`, inspect whether `principal_holders[0]` now has only canonical keys and no stray numeric-string placeholders.
 - Reproduce a Yahoo Finance rate-limit scenario and inspect `market_data_note`.
-- Confirm whether `market_data_note` now backfills to `Previous snapshot market data available: yes.` when older non-null market history exists.
-- If `market_data_note` still says `Previous snapshot market data available: no.` after the backfill change, treat that as a real historical-lookup bug.
+- Confirm whether `market_data_note` now backfills to `Previous snapshot market data available: yes.` after the new ticker-keyed market-history fallback.
+- If `market_data_note` still says `Previous snapshot market data available: no.` after the ticker-keyed history fallback change, treat that as a real deployed-history gap rather than the old snapshot-selection bug.
 - If an issuer still returns `principal_holders = []` together with `No filing text available`, inspect whether the notes now include the specific fetch failure reason and no longer overstate filing-text parsing.
 - Ignore Form 144-only evidence when judging the Form 4 feature, because Form 144 is intent-to-sell, not completed Form 4 sale execution.
 
