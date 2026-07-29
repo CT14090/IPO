@@ -351,6 +351,25 @@ class SecParserTests(unittest.TestCase):
         self.assertIn("Matched filing form 424B4", details)
         self.assertIn("Parsed 1 principal holder rows", details)
 
+    def test_assess_data_confidence_handles_missing_filing_html(self) -> None:
+        score, label, details = assess_data_confidence(
+            filing_form="424B4",
+            lockup_source="No filing text available (HTTP 429)",
+            principal_holders=[],
+            parsed_ipo_date="2023-09-14",
+            source_url="https://www.sec.gov/example",
+            filing_text_available=False,
+            ipo_date_parsed_from_filing=False,
+        )
+
+        self.assertLess(score, 50)
+        self.assertEqual(label, "Low")
+        self.assertIn("Prospectus HTML unavailable during refresh", details)
+        self.assertIn("IPO date inherited from seeded watchlist", details)
+        self.assertIn("Principal holder table not parsed because filing HTML was unavailable", details)
+        self.assertNotIn("Lock-up term parsed from filing text", details)
+        self.assertNotIn("IPO date parsed from filing text", details)
+
     def test_assess_data_confidence_penalizes_seeded_fallbacks(self) -> None:
         score, label, details = assess_data_confidence(
             filing_form=None,
