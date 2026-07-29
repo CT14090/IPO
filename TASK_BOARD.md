@@ -21,6 +21,8 @@
 - The ARM follow-up diagnostics also confirm that the lock-up parser improved from the earlier fallback state: `lockup_source` now resolves to `Lock-Up Restrictions section: Regex match: for a period of 180 days` instead of `No filing text available`.
 - The restored `sec.py` tail fixed the import-time deploy regression: the app is loading again, which confirms `ipo_tracker.sec` imports successfully after the truncation repair.
 - ARM principal-holder parsing is now live-confirmed to return a real holder row instead of `[]`: the diagnostics show `holder = SoftBank Group Corp.` with `shares = 1,025,233,999`.
+- On Wednesday, July 29, 2026, the user confirmed that the first SEC refresh was materially slower than the second again, so the repeat-refresh speed gap is restored in production.
+- The latest ARM diagnostics also confirm the in-process market cache is active in production because `market_data_note` now includes `Reusing in-process market cache.` on the faster second run.
 
 ## Confirmed By Screenshots Or User Visual Pass
 - The market `% from IPO` column now uses the correct signed arithmetic.
@@ -61,15 +63,14 @@
 - `tests/test_market.py` covers market-snapshot reuse when a previous good snapshot exists, explicit no-previous-snapshot note behavior, unchanged successful-market-data behavior, and note-preservation when a cached market failure is later merged with reusable snapshot data.
 
 ## Still Open
-- Live-validate whether the new in-process market cache restores a large first-run versus second-run speed gap on the deployed app.
 - Live-validate whether ARM now reports `Previous snapshot market data available: yes.` once historical market values are backfilled from the latest non-null snapshot.
-- Live-validate the ARM holder cleanup by confirming `principal_holders[0]` now contains only canonical keys such as `holder`, `shares`, and `percent`, with no stray numeric-string keys.
-- Live-validate the new SEC filing-fetch diagnostics by checking whether an ARM-style miss now says `Prospectus fetch failed during refresh: HTTP ...` instead of falsely claiming the lock-up and IPO date were parsed from filing text.
-- Decide whether the holder parser should prefer the post-offering percent (`90.6%`) or preserve only the pre-offering percent (`100%`) when both are present in ARM-style tables.
-- Live-validate the new market fallback diagnostics by checking whether `market_data_note` explicitly says `Previous snapshot market data available: yes.` or `Previous snapshot market data available: no.` during a Yahoo rate-limit refresh.
 - If the diagnostics still show `Previous snapshot market data available: no.` after the backfill change, debug why the historical non-null snapshot is not being found.
+- Live-validate the ARM holder cleanup by confirming `principal_holders[0]` now contains only canonical keys such as `holder`, `shares`, and `percent`, with no stray numeric-string keys.
+- Decide whether the holder parser should prefer the post-offering percent (`90.6%`) or preserve only the pre-offering percent (`100%`) when both are present in ARM-style tables.
+- Live-validate the new SEC filing-fetch diagnostics by checking whether an ARM-style miss now says `Prospectus fetch failed during refresh: HTTP ...` instead of falsely claiming the lock-up and IPO date were parsed from filing text.
+- Live-validate the new market fallback diagnostics by checking whether `market_data_note` explicitly says `Previous snapshot market data available: yes.` or `Previous snapshot market data available: no.` during a Yahoo rate-limit refresh.
 - Decide whether Yahoo rate-limit resilience needs an additional cache or retry/backoff layer beyond snapshot preservation plus in-process reuse.
-- Decide whether the cold-refresh path still needs another speed pass, even though repeat refreshes are now materially faster in some earlier live runs.
+- Decide whether the cold-refresh path still needs another speed pass, even though repeat refreshes are now materially faster again in the latest live run.
 - Confirm that the new `insider_sales.lookup.status` values are enough in practice to explain remaining edge cases without needing a DB-level dedicated lookup table.
 - Decide later whether the overview-table `0` should gain a tooltip or footnote clarifying that the value means `parsed count`, not `confirmed none exist`.
 - Decide later whether post-unlock insider activity should remain sale-code `S` only or expand to include non-open-market codes such as `F`.
@@ -90,10 +91,10 @@
 - Confirm the app starts cleanly again after the restored `sec.py` tail.
 - Refresh `ARM` and inspect whether `principal_holders` now contains real holder rows instead of an empty list.
 - For `ARM`, inspect whether `principal_holders[0]` now has only canonical keys and no stray numeric-string placeholders.
-- If an issuer still returns `principal_holders = []` together with `No filing text available`, inspect whether the notes now include the specific fetch failure reason and no longer overstate filing-text parsing.
 - Reproduce a Yahoo Finance rate-limit scenario and inspect `market_data_note`.
 - Confirm whether `market_data_note` now backfills to `Previous snapshot market data available: yes.` when older non-null market history exists.
 - If `market_data_note` still says `Previous snapshot market data available: no.` after the backfill change, treat that as a real historical-lookup bug.
+- If an issuer still returns `principal_holders = []` together with `No filing text available`, inspect whether the notes now include the specific fetch failure reason and no longer overstate filing-text parsing.
 - Ignore Form 144-only evidence when judging the Form 4 feature, because Form 144 is intent-to-sell, not completed Form 4 sale execution.
 
 ## Notes
