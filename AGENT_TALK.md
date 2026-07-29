@@ -22,42 +22,43 @@ Codex may choose to update only this .md file to further clarify questions by pr
 
 # IMPORTANT : DO NOT DELETE ANYTHING INCLUDING THIS LINE AND ABOVE
 
-## Codex Handoff — 2026-07-28
+## Codex Handoff — 2026-07-29
 
-Tuesday, July 28, 2026 live validation has now advanced beyond the prior `ARM principal_holders = []` state.
+Minor ARM holder cleanup status on Wednesday, July 29, 2026:
 
-New live result from the user:
-- `principal_holders` now contains a real parsed row:
-  - `holder = SoftBank Group Corp.`
-  - `shares = 1025233999`
-- This is the main success condition we were trying to reach for the embedded-header parser pass.
-- It means the parser is no longer completely missing the ARM-style prospectus table.
+What I verified directly in `main`
+- The parser-side fix for the leaked ARM keys was already present in `ipo_tracker/sec.py` before this handoff refresh.
+- `_canonicalize_holder_row(...)` now drops:
+  - raw numeric column labels such as `"8"` / `"20"`
+  - bare `%` text artifacts
+- So the code path that should suppress the stray ARM keys is already live in source.
 
-But the live output also shows the parser is not fully normalized yet:
-- same row still contains stray unlabeled keys:
-  - `"8": "%"`
-  - `"20": "%"`
-- So the current state is:
-  - materially improved and live-useful
-  - but not yet clean / final
+What I changed just now
+- Tightened `tests/test_sec.py` so the ARM-style embedded-header regression now asserts:
+  - parsed row count is still `1`
+  - the SoftBank row still maps to `holder`, `shares`, `percent`
+  - the parsed dict keys are exactly `{ "holder", "shares", "percent" }`
+- Updated `TASK_BOARD.md` so the board no longer describes the numeric-key cleanup as purely open work.
 
-Most likely interpretation:
-- promoted header handling is now good enough to anchor the real holder row
-- however duplicate or unlabeled percent columns from the wide ARM table are still leaking through into the canonicalized dict
-- the parser is probably preserving columns whose normalized names are not mapped to `shares` / `percent` / `holder`, so their raw DataFrame column labels survive as numeric-string keys
+Current state
+- We now have:
+  - source-level fix present
+  - regression coverage strengthened
+- We do not yet have fresh live validation from the deployed app proving that the ARM diagnostics JSON no longer shows numeric-string keys.
 
-What Codex already did after this validation:
-- updated `TASK_BOARD.md` to reflect:
-  - ARM holder parsing is now live-confirmed non-empty
-  - residual cleanup remains for stray numeric-string keys and multi-percent interpretation
+Best next validation target
+- Refresh the deployed app and inspect `ARM` diagnostics.
+- Expected result now:
+  - `principal_holders[0]` contains only canonical keys
+  - no `"8": "%"`
+  - no `"20": "%"`
 
-Best next engineering target:
-1. clean up residual holder-row noise for ARM-style tables
-2. decide policy for multi-percent / multi-number tables:
-   - should we preserve pre-offering fields only?
-   - post-offering fields only?
-   - or structured separate fields?
+What still remains conceptually open
+- product policy for wide holder tables with both pre-offering and post-offering metrics:
+  - keep pre-offering `%` only
+  - keep post-offering `%` only
+  - or move to a richer structured representation later
+- That is now a design decision, not the same bug as the leaked numeric keys.
 
-If Claude is useful here, the best analysis target is:
-- how to normalize wide prospectus holder tables with both pre-offering and post-offering columns without losing meaning or leaking raw numeric column names into the output dict
-- especially whether the product should keep only one canonical `percent` / `shares` pair or move to a more explicit structure for wide tables
+Use Claude only if useful for the design question above.
+For the numeric-key bug itself, Codex considers the code fix small and already handled; the next step is live validation, not deeper parser analysis.
