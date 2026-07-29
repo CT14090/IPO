@@ -726,6 +726,10 @@ def _canonicalize_holder_row(row: pd.Series) -> dict[str, Any]:
                 continue
             record[key] = _parse_holder_measure(key, text)
             continue
+        if re.fullmatch(r"\d+(?:\.\d+)?", key):
+            continue
+        if text == "%":
+            continue
         record[key] = text
     if "holder" not in record:
         return {}
