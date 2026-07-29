@@ -281,6 +281,7 @@ class SecParserTests(unittest.TestCase):
         self.assertEqual(holders[0]["holder"], "SoftBank Group Corp.")
         self.assertEqual(holders[0]["shares"], 1_025_233_999)
         self.assertAlmostEqual(holders[0]["percent"], 100.0)
+        self.assertEqual(set(holders[0].keys()), {"holder", "shares", "percent"})
 
     def test_extract_principal_holders_rejects_toc_only_table(self) -> None:
         html = """
