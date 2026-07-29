@@ -24,41 +24,51 @@ Codex may choose to update only this .md file to further clarify questions by pr
 
 ## Codex Handoff — 2026-07-29
 
-Wednesday, July 29, 2026 update after new ARM diagnostics showing:
-- `principal_holders = []`
-- `lockup_source = No filing text available`
-- notes still implied filing-text parsing in the old deploy output
+Wednesday, July 29, 2026 follow-up after the user reported that the second SEC refresh again took more than 30 seconds and no longer showed a big improvement over the first run.
 
-Diagnosis
-- This was not the same ARM table-structure bug as before.
-- In this refresh, the app never obtained usable prospectus HTML, so the holder parser never ran.
-- Root problem = filing fetch miss / transient SEC access issue, not another embedded-header parsing miss.
+New diagnosis from the latest ARM diagnostics
+- Form 4 reuse is still working correctly.
+- Evidence from ARM:
+  - `candidate_filings = 1`
+  - `documents_fetched = 1`
+  - `xml_documents = 1`
+  - `reused_transactions = 35`
+  - `reused_filings = 14`
+- So the second-run slowdown is no longer mainly a Form 4 problem.
 
-What Codex changed in `main`
-- `ipo_tracker/sec.py`
-  - added bounded retry for SEC text/json fetches on transient `429` / `503`
-  - records the fetch failure reason as a short note such as `HTTP 429`
-  - stops rewarding confidence for `lock-up parsed from filing text` when the HTML was unavailable
-  - stops claiming `IPO date parsed from filing text` when the app fell back to the seeded watchlist date
-  - adds a clearer holder diagnostic: `Principal holder table not parsed because filing HTML was unavailable`
-- `tests/test_sec.py`
-  - added regression coverage for the missing-filing-HTML case so misleading confidence details are caught
+Most likely remaining bottleneck
+- market refreshes via Yahoo / `yfinance`
+- latest ARM diagnostics show:
+  - all market values null
+  - `market_data_note = Market data fetch failed: Too Many Requests. Rate limited. Try after a while. Previous snapshot market data available: no.`
+- But historically ARM previously did have non-null market values, so `no` strongly suggested our reuse path was only checking the immediately latest snapshot instead of the latest non-null historical snapshot.
+- Also, every refresh was still re-hitting Yahoo because we had no in-process market cache.
 
-Important distinction now
-- If diagnostics show:
-  - `principal_holders = []`
-  - `No filing text available (...)`
-- then we should read that as a fetch-layer issue.
-- If diagnostics show real filing text but empty holders, that is a parser-layer issue.
+What Codex changed just now
+- `ipo_tracker/market.py`
+  - added a short-lived in-process cache for `fetch_market_data(ticker, ipo_date)`
+  - repeat refreshes in the same deployed app process can now reuse the previous Yahoo result, including a recent rate-limit failure, instead of immediately refetching everything
+  - cached responses append `Reusing in-process market cache.` in the note
+- `ipo_tracker/db.py`
+  - added historical backfill for market fields from the latest non-null market snapshot, not just the immediately latest snapshot
+  - if the newest snapshot has null market data but an older snapshot has values, dashboard rows now carry forward those historical values for reuse
+  - if the newest note is a market-fetch failure and an older good market snapshot is used, the note now appends:
+    - `Previous snapshot market data available: yes.`
+    - `Backfilled previous snapshot market data from local history.`
+- `tests/test_market.py`
+  - added coverage for note preservation when a cached market failure is merged with reusable snapshot data
+
+Expected live effect
+1. First refresh may still be somewhat cold.
+2. Second refresh in the same app process should be meaningfully faster because:
+   - Form 4 data is already incremental
+   - market calls should now come from the in-process cache instead of Yahoo
+3. If Yahoo is rate-limiting but older market history exists, diagnostics should stop saying `Previous snapshot market data available: no.` and should instead backfill from local history.
 
 Best next live validation target
-1. Refresh the deployed app again.
-2. If ARM still misses HTML, confirm the notes now explicitly say something like:
-   - `Prospectus fetch failed during refresh: HTTP ...`
-3. Also confirm the confidence details no longer falsely say:
-   - `Lock-up term parsed from filing text`
-   - `IPO date parsed from filing text`
-   when the filing HTML was not fetched.
+- Refresh twice again after this deploy.
+- Check:
+  - whether second refresh becomes materially faster
+  - whether ARM `market_data_note` changes from `... available: no.` to a historical-backfill / cache-reuse note
 
-Claude is not needed unless we want broader strategy ideas for SEC fetch resilience beyond this bounded retry + truthful diagnostics pass.
-This specific bug was minor and has already been addressed in code.
+Claude is not required for this step unless we still see poor second-run timing after the market cache and historical-backfill pass. At that point the remaining issue would likely be broader refresh orchestration rather than parser logic.
