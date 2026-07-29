@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from functools import lru_cache
@@ -22,6 +23,8 @@ SEC_BASE_HEADERS = {
 SUBMISSIONS_BASE_URL = "https://data.sec.gov/submissions/"
 IPO_FORMS = {"424B4", "424B1", "424B3", "S-1", "S-1/A", "F-1", "F-1/A"}
 EARNINGS_RELEASE_FORMS = {"8-K", "8-K/A", "10-Q", "10-Q/A", "10-K", "10-K/A"}
+SEC_REQUEST_MAX_ATTEMPTS = 3
+SEC_REQUEST_RETRYABLE_STATUS_CODES = {429, 503}
 
 # ── Fix 1 ──────────────────────────────────────────────────────────────────────
 # "underwriting" removed from this list.  It will never be used as a lockup
@@ -147,15 +150,56 @@ def sec_headers() -> dict[str, str]:
     return {**SEC_BASE_HEADERS, "User-Agent": user_agent}
 
 
+def _should_retry_sec_request(exc: requests.RequestException) -> bool:
+    response = getattr(exc, "response", None)
+    if response is None:
+        return False
+    return response.status_code in SEC_REQUEST_RETRYABLE_STATUS_CODES
+
+
+def _retry_delay_seconds(exc: requests.RequestException, attempt: int) -> float:
+    response = getattr(exc, "response", None)
+    if response is not None:
+        retry_after = response.headers.get("Retry-After")
+        if retry_after:
+            try:
+                return max(0.0, min(float(retry_after), 5.0))
+            except ValueError:
+                pass
+    return float(min(attempt, 3))
+
+
+def _describe_request_exception(exc: requests.RequestException) -> str:
+    response = getattr(exc, "response", None)
+    if response is not None:
+        return f"HTTP {response.status_code}"
+    return exc.__class__.__name__
+
+
+def _request_with_retries(url: str) -> requests.Response:
+    last_exc: requests.RequestException | None = None
+    for attempt in range(1, SEC_REQUEST_MAX_ATTEMPTS + 1):
+        try:
+            response = requests.get(url, headers=sec_headers(), timeout=30)
+            response.raise_for_status()
+            return response
+        except requests.RequestException as exc:
+            last_exc = exc
+            if attempt >= SEC_REQUEST_MAX_ATTEMPTS or not _should_retry_sec_request(exc):
+                raise
+            time.sleep(_retry_delay_seconds(exc, attempt))
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("SEC request failed without a captured exception.")
+
+
 def fetch_json(url: str) -> dict[str, Any]:
-    response = requests.get(url, headers=sec_headers(), timeout=30)
-    response.raise_for_status()
+    response = _request_with_retries(url)
     return response.json()
 
 
 def fetch_text(url: str) -> str:
-    response = requests.get(url, headers=sec_headers(), timeout=30)
-    response.raise_for_status()
+    response = _request_with_retries(url)
     return response.text
 
 
@@ -962,6 +1006,8 @@ def assess_data_confidence(
     principal_holders: list[dict[str, Any]],
     parsed_ipo_date: str | None,
     source_url: str | None,
+    filing_text_available: bool = True,
+    ipo_date_parsed_from_filing: bool | None = None,
     has_early_release: bool = False,
     has_8k_amendment: bool = False,
 ) -> tuple[int, str, str]:
@@ -983,13 +1029,17 @@ def assess_data_confidence(
     else:
         details.append("No filing form parsed")
 
-    if lockup_source.startswith("Defaulted"):
+    if not filing_text_available:
+        details.append("Prospectus HTML unavailable during refresh")
+    elif lockup_source.startswith("Defaulted"):
         details.append("Lock-up term fell back to seeded default")
     else:
         score += 25
         details.append("Lock-up term parsed from filing text")
 
-    if parsed_ipo_date:
+    if ipo_date_parsed_from_filing is None:
+        ipo_date_parsed_from_filing = bool(parsed_ipo_date)
+    if ipo_date_parsed_from_filing:
         score += 10
         details.append("IPO date parsed from filing text")
     else:
@@ -999,6 +1049,8 @@ def assess_data_confidence(
     if holder_count:
         score += 25
         details.append(f"Parsed {holder_count} principal holder rows")
+    elif not filing_text_available:
+        details.append("Principal holder table not parsed because filing HTML was unavailable")
     else:
         details.append("Principal holder table not cleanly parsed")
 
@@ -1104,20 +1156,26 @@ def enrich_company(company: dict[str, Any]) -> dict[str, Any]:
     filing_date = filing_ref.filing_date if filing_ref else None
 
     html_text = ""
+    filing_fetch_note: str | None = None
     if source_url:
         try:
             html_text = fetch_text(source_url)
-        except requests.RequestException:
+        except requests.RequestException as exc:
+            filing_fetch_note = _describe_request_exception(exc)
             html_text = ""
 
     lockup_conditions = (
         extract_lockup_conditions(html_text)
         if html_text
-        else LockupConditions(DEFAULT_LOCKUP_DAYS, "No filing text available")
+        else LockupConditions(
+            DEFAULT_LOCKUP_DAYS,
+            f"No filing text available ({filing_fetch_note})" if filing_fetch_note else "No filing text available",
+        )
     )
     principal_holders = extract_principal_holders(html_text) if html_text else []
 
     parsed_ipo_date = extract_ipo_date_from_text(html_text) if html_text else None
+    parsed_ipo_date_from_filing = parsed_ipo_date is not None
     if not parsed_ipo_date:
         parsed_ipo_date = seeded_ipo_date
     parsed_ipo_dt = date.fromisoformat(parsed_ipo_date)
@@ -1177,11 +1235,15 @@ def enrich_company(company: dict[str, Any]) -> dict[str, Any]:
         principal_holders=principal_holders,
         parsed_ipo_date=parsed_ipo_date,
         source_url=source_url,
+        filing_text_available=bool(html_text),
+        ipo_date_parsed_from_filing=parsed_ipo_date_from_filing,
         has_early_release=lockup_conditions.has_early_release,
         has_8k_amendment=bool(amendment_date),
     )
 
     notes = lockup_conditions.notes_summary()
+    if filing_fetch_note:
+        notes = f"{notes} | Prospectus fetch failed during refresh: {filing_fetch_note}"
     if insider_sales_summary["transaction_count"]:
         notes = (
             f"{notes} | Post-unlock Form 4 sales parsed: "
