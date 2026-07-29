@@ -11,6 +11,15 @@ from .config import WATCHLIST
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT_DIR / "data"
 DB_PATH = DATA_DIR / "ipo_lockup_tracker.db"
+MARKET_VALUE_COLUMNS = (
+    "ipo_price",
+    "current_price",
+    "price_change_pct",
+    "avg_volume_30d",
+    "market_cap",
+)
+MARKET_PREVIOUS_AVAILABLE_NOTE = "Previous snapshot market data available: yes."
+MARKET_HISTORY_BACKFILLED_NOTE = "Backfilled previous snapshot market data from local history."
 
 
 def get_connection() -> sqlite3.Connection:
@@ -41,6 +50,21 @@ def _row_value(row: sqlite3.Row | None, key: str, default):
     if value is None:
         return default
     return value
+
+
+def _append_note(note: str, extra: str) -> str:
+    note = note.strip()
+    if not note:
+        return extra
+    if extra in note:
+        return note
+    return f"{note} {extra}"
+
+
+def _snapshot_has_market_values(row: sqlite3.Row | None) -> bool:
+    if row is None:
+        return False
+    return any(_row_value(row, column, None) is not None for column in MARKET_VALUE_COLUMNS)
 
 
 def _int_or_none(value) -> int | None:
@@ -256,12 +280,46 @@ def fetch_latest_snapshots() -> dict[int, sqlite3.Row]:
         return {row["company_id"]: row for row in rows}
 
 
+def fetch_latest_non_null_market_snapshots() -> dict[int, sqlite3.Row]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT s.*
+            FROM company_snapshots s
+            INNER JOIN (
+                SELECT company_id, MAX(id) AS max_id
+                FROM company_snapshots
+                WHERE ipo_price IS NOT NULL
+                   OR current_price IS NOT NULL
+                   OR price_change_pct IS NOT NULL
+                   OR avg_volume_30d IS NOT NULL
+                   OR market_cap IS NOT NULL
+                GROUP BY company_id
+            ) latest ON latest.max_id = s.id
+            """
+        ).fetchall()
+        return {row["company_id"]: row for row in rows}
+
+
 def load_dashboard_rows() -> list[dict]:
     companies = fetch_companies()
     snapshots = fetch_latest_snapshots()
+    market_snapshots = fetch_latest_non_null_market_snapshots()
     rows: list[dict] = []
     for row in companies:
         snapshot = snapshots.get(row["id"])
+        market_snapshot = snapshot if _snapshot_has_market_values(snapshot) else market_snapshots.get(row["id"])
+        market_note = _row_value(snapshot, "market_data_note", "")
+        if (
+            snapshot is not None
+            and market_snapshot is not None
+            and snapshot["id"] != market_snapshot["id"]
+            and market_note.startswith("Market data fetch failed:")
+        ):
+            market_note = _append_note(
+                _append_note(market_note, MARKET_PREVIOUS_AVAILABLE_NOTE),
+                MARKET_HISTORY_BACKFILLED_NOTE,
+            )
         rows.append(
             {
                 "company_id": row["id"],
@@ -280,12 +338,12 @@ def load_dashboard_rows() -> list[dict]:
                 "lockup_source": _row_value(snapshot, "lockup_source", "Seeded watchlist"),
                 "lockup_conditions": json.loads(_row_value(snapshot, "lockup_conditions_json", "{}")),
                 "insider_sales": json.loads(_row_value(snapshot, "insider_sales_json", "[]")),
-                "ipo_price": _float_or_none(_row_value(snapshot, "ipo_price", None)),
-                "current_price": _float_or_none(_row_value(snapshot, "current_price", None)),
-                "price_change_pct": _float_or_none(_row_value(snapshot, "price_change_pct", None)),
-                "avg_volume_30d": _int_or_none(_row_value(snapshot, "avg_volume_30d", None)),
-                "market_cap": _int_or_none(_row_value(snapshot, "market_cap", None)),
-                "market_data_note": _row_value(snapshot, "market_data_note", ""),
+                "ipo_price": _float_or_none(_row_value(market_snapshot, "ipo_price", None)),
+                "current_price": _float_or_none(_row_value(market_snapshot, "current_price", None)),
+                "price_change_pct": _float_or_none(_row_value(market_snapshot, "price_change_pct", None)),
+                "avg_volume_30d": _int_or_none(_row_value(market_snapshot, "avg_volume_30d", None)),
+                "market_cap": _int_or_none(_row_value(market_snapshot, "market_cap", None)),
+                "market_data_note": market_note,
                 "confidence_score": int(_row_value(snapshot, "confidence_score", 0)),
                 "confidence_label": _row_value(snapshot, "confidence_label", "Seeded"),
                 "confidence_details": _row_value(snapshot, "confidence_details", "Seeded watchlist entry ready for SEC enrichment."),
