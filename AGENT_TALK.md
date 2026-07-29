@@ -24,37 +24,33 @@ Codex may choose to update only this .md file to further clarify questions by pr
 
 ## Codex Handoff — 2026-07-29
 
-Wednesday, July 29, 2026 live follow-up after the user re-tested the deployed app.
+Wednesday, July 29, 2026 follow-up after implementing the next fix for the ARM market fallback issue.
 
-What is now confirmed live
-- The repeat-refresh performance fix is working again.
-- User report: first SEC refresh was materially slower; second refresh decreased significantly.
-- Latest ARM diagnostics also show `market_data_note` includes `Reusing in-process market cache.`
-- That means the new in-process Yahoo market cache is active in production, not just in code.
+What Codex changed
+- `ipo_tracker/db.py`
+  - added a new ticker-keyed `company_market_history` table that stores the last good market values independently of the latest snapshot row
+  - `upsert_snapshot(...)` now persists successful market values into that history table
+  - `initialize_database()` now backfills `company_market_history` from older non-null snapshot rows so legacy data can still be recovered
+  - `load_dashboard_rows()` now uses ticker-keyed market history when the latest snapshot has null market fields
+- `tests/test_db.py`
+  - added regression coverage for direct market-history reuse after a failed refresh
+  - added regression coverage for rebuilding market history from older snapshots and then reusing it after a failed refresh
 
-Latest ARM live facts
-- `insider_sales.lookup.status = sales_parsed`
-- `candidate_filings = 1`
-- `documents_fetched = 1`
-- `xml_documents = 1`
-- `reused_transactions = 39`
-- `reused_filings = 17`
-- `new_transactions_parsed = 1`
-- `principal_holders = [{"holder": "SoftBank Group Corp.", "shares": 1025233999}]`
-- `market_data_note = Market data fetch failed: Too Many Requests. Rate limited. Try after a while. Reusing in-process market cache. Previous snapshot market data available: no.`
+Why this change was made
+- The earlier fallback still depended too much on the latest snapshot chain.
+- The live ARM diagnostics continued to say `Previous snapshot market data available: no.` even after we had earlier user evidence that ARM once had non-null market values.
+- This new design gives us a stable last-good market source keyed by ticker, plus a migration path from existing snapshot history.
 
-What remains open
-1. Historical market backfill still looks incomplete for ARM.
-   - The note still says `Previous snapshot market data available: no.`
-   - Since ARM had historical non-null market values in earlier user-provided diagnostics, either:
-     - the deployed DB snapshot history no longer contains a good ARM market row, or
-     - our latest-non-null backfill query/merge path still misses a valid older row.
-2. ARM holder parsing is cleaner, but still incomplete.
-   - The live row now has only canonical keys and no stray numeric placeholders, which is good.
-   - But it still only surfaces `holder` and `shares`, with no `percent`.
-   - We still need a decision on whether to preserve the pre-offering percent, the post-offering percent, or both when ARM-style tables expose multiple percent columns.
+What is already code-verified
+- The new history path does not depend on the latest snapshot row containing market values.
+- The new history path survives a later failed market refresh because the last-good values are stored separately.
+- The new history table is rebuilt from older snapshots during initialization, which should help if the deployed app already has older successful market rows.
 
-Interpretation
-- No Claude analysis is required for the repeat-refresh speed issue anymore; that part is live-confirmed.
-- Claude may still be useful for thinking through the best semantic rule for ARM-style percent selection if we want a stronger parsing policy before changing code.
-- If we do not need Claude, the next coding target should be the historical-market-backfill miss, because that is now the clearest remaining bug surfaced by live diagnostics.
+What still needs live validation
+1. Refresh `ARM` again and inspect diagnostics.
+   - Best-case outcome: `market_data_note` now says `Previous snapshot market data available: yes.` after a Yahoo rate-limit refresh.
+2. If it still says `no`, that would now point much more strongly to an environment/data reality:
+   - there may truly be no prior non-null ARM market values in the deployed local DB anymore
+   - this would no longer look like the old selection bug
+
+Claude is not required for this market-history step unless the new ticker-keyed fallback still fails live. If it does fail, the next question is likely about the deployed app’s actual SQLite history state rather than parser design.
