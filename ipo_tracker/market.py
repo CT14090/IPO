@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from datetime import date, timedelta
 from typing import Any
 
@@ -20,6 +21,9 @@ MARKET_VALUE_KEYS = (
 MARKET_PREVIOUS_AVAILABLE_NOTE = "Previous snapshot market data available: yes."
 MARKET_PREVIOUS_MISSING_NOTE = "Previous snapshot market data available: no."
 MARKET_REUSED_NOTE = "Reusing previous snapshot market data."
+MARKET_CACHE_REUSED_NOTE = "Reusing in-process market cache."
+MARKET_CACHE_TTL_SECONDS = 900
+_MARKET_CACHE: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
 
 
 def _safe_float(value: Any) -> float | None:
@@ -38,6 +42,39 @@ def _append_note(note: str, extra: str) -> str:
     if extra in note:
         return note
     return f"{note} {extra}"
+
+
+
+def _copy_market_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return dict(payload)
+
+
+
+def _market_cache_key(ticker: str, ipo_date: str) -> tuple[str, str]:
+    return ticker.upper().strip(), ipo_date.strip()
+
+
+
+def _market_cache_get(ticker: str, ipo_date: str) -> dict[str, Any] | None:
+    key = _market_cache_key(ticker, ipo_date)
+    cached = _MARKET_CACHE.get(key)
+    if cached is None:
+        return None
+    cached_at, payload = cached
+    if time.time() - cached_at > MARKET_CACHE_TTL_SECONDS:
+        _MARKET_CACHE.pop(key, None)
+        return None
+    result = _copy_market_payload(payload)
+    note = str(result.get("market_data_note", "")).strip()
+    result["market_data_note"] = _append_note(note, MARKET_CACHE_REUSED_NOTE)
+    return result
+
+
+
+def _market_cache_set(ticker: str, ipo_date: str, payload: dict[str, Any]) -> dict[str, Any]:
+    stored = _copy_market_payload(payload)
+    _MARKET_CACHE[_market_cache_key(ticker, ipo_date)] = (time.time(), stored)
+    return _copy_market_payload(stored)
 
 
 
@@ -132,6 +169,10 @@ def fetch_market_data(ticker: str, ipo_date: str) -> dict[str, Any]:
         empty["market_data_note"] = "No ticker available for this company"
         return empty
 
+    cached = _market_cache_get(ticker, ipo_date)
+    if cached is not None:
+        return cached
+
     try:
         stock = yf.Ticker(ticker)
 
@@ -176,7 +217,7 @@ def fetch_market_data(ticker: str, ipo_date: str) -> dict[str, Any]:
         if current_price is None:
             note = "Price data unavailable — ticker may not be listed yet"
 
-        return {
+        result = {
             "ipo_price": round(ipo_price, 2) if ipo_price else None,
             "current_price": round(current_price, 2) if current_price else None,
             "price_change_pct": price_change_pct,
@@ -185,7 +226,8 @@ def fetch_market_data(ticker: str, ipo_date: str) -> dict[str, Any]:
             "data_source": "yfinance",
             "market_data_note": note,
         }
+        return _market_cache_set(ticker, ipo_date, result)
 
     except Exception as exc:
         empty["market_data_note"] = f"Market data fetch failed: {exc}"
-        return empty
+        return _market_cache_set(ticker, ipo_date, empty)
