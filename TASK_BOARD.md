@@ -68,10 +68,14 @@
 - `tests/test_db.py` covers ticker-keyed market history reuse and rebuilding market history from older snapshots.
 
 ## Still Open
+- ARM percent extraction is still not live-confirmed: the latest diagnostics show `principal_holders[0]` with `holder` and `shares` but no `percent` key yet.
+- The most likely remaining root cause is narrow and code-level: `_first_percent_candidate(...)` still appears to require a literal `%` symbol, so it likely misses bare numeric percent cells such as `100` or `90.6` after SEC table normalization.
+- Apply the percent fallback fix in `ipo_tracker/sec.py`: prefer explicit percent cells first, but if none exist, accept the first plausible bare numeric percentage candidate in the `0..100` range.
+- Add a regression in `tests/test_sec.py` for the ARM-style row where percent values are plain numeric cells with no `%` sign.
 - Live-validate whether ARM now reports `Previous snapshot market data available: yes.` after the new ticker-keyed `company_market_history` fallback.
 - If the diagnostics still show `Previous snapshot market data available: no.` after the ticker-keyed history fallback change, debug why no prior non-null ARM market values exist in the deployed local DB.
 - Live-validate the ARM holder cleanup by confirming `principal_holders[0]` now contains only canonical keys such as `holder`, `shares`, and `percent`, with no stray numeric-string keys.
-- Live-validate whether ARM now shows a non-null `percent` in `principal_holders[0]` after the spacer-table percent-retention fix.
+- Live-validate whether ARM now shows a non-null `percent` in `principal_holders[0]` after the numeric-percent fallback fix.
 - Decide later whether we still want to switch ARM-style percent semantics from the current pre-offering default (`100%`) to the post-offering figure (`90.6%`).
 - Live-validate the new SEC filing-fetch diagnostics by checking whether an ARM-style miss now says `Prospectus fetch failed during refresh: HTTP ...` instead of falsely claiming the lock-up and IPO date were parsed from filing text.
 - Live-validate the new market fallback diagnostics by checking whether `market_data_note` explicitly says `Previous snapshot market data available: yes.` or `Previous snapshot market data available: no.` during a Yahoo rate-limit refresh.
@@ -97,7 +101,7 @@
 - Confirm the app starts cleanly again after the restored `sec.py` tail.
 - Refresh `ARM` and inspect whether `principal_holders` now contains real holder rows instead of an empty list.
 - For `ARM`, inspect whether `principal_holders[0]` now has only canonical keys and no stray numeric-string placeholders.
-- For `ARM`, inspect whether `principal_holders[0].percent` is now present and non-null after the spacer-table percent-retention fix.
+- For `ARM`, inspect whether `principal_holders[0].percent` is now present and non-null after the numeric-percent fallback fix.
 - Reproduce a Yahoo Finance rate-limit scenario and inspect `market_data_note`.
 - Confirm whether `market_data_note` now backfills to `Previous snapshot market data available: yes.` after the new ticker-keyed market-history fallback.
 - If `market_data_note` still says `Previous snapshot market data available: no.` after the ticker-keyed history fallback change, treat that as a real deployed-history gap rather than the old snapshot-selection bug.
@@ -109,3 +113,4 @@
 - `main` is the branch to keep using for the project.
 - Streamlit Cloud deployment is already working.
 - Technical difficulty on my side: the local shell/runtime bridge is unavailable in this session, so I could not run the app or local test suite directly. That is why I am separating live-confirmed items from code-complete items instead of overstating certainty.
+- Additional current blocker: the GitHub large-file fetch path truncates `ipo_tracker/sec.py` in this thread, so a safe whole-file remote patch to that file is not practical here without a working local file bridge.
