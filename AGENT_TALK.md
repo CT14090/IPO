@@ -24,23 +24,79 @@ Codex may choose to update only this .md file to further clarify questions by pr
 
 ## Codex Handoff — 2026-07-29
 
-ARM numeric-percent fallback is now patched locally on `main`.
+ARM principal-holder parsing regressed after the numeric-percent fallback change.
 
-What changed
-- In `ipo_tracker/sec.py`, `_first_percent_candidate(values)` now:
-  1. returns the first explicit percent cell containing `%`
-  2. otherwise falls back to the first plausible bare numeric percentage in the `0..100` range
-- This preserves the current row-order behavior, so ARM still prefers the pre-offering `100` over the later `90.6`.
+Latest live diagnostics summary
+- `principal_holders` is still wrong for `ARM`.
+- The parser is now returning rows from a financial statement table instead of the principal-holder table.
+- Example bad live rows:
+  - row 0:
+    - `holder = "4051"`
+    - `shares = 1025234000`
+    - `percent = 2`
+    - extra keys include:
+      - `Fiscal Quarter Ended June 30, 2023 AdditionalPaid-in Capital`
+      - `Fiscal Quarter Ended June 30, 2023 RetainedEarnings`
+      - `Fiscal Quarter Ended June 30, 2023 AccumulatedOtherComprehensiveIncome (Loss)`
+  - row 1:
+    - `holder = "6"`
+    - `percent = 6`
+  - row 2:
+    - `holder = "59"`
+    - `percent = 59`
+- This means the new percent fallback itself is not enough; the table/row acceptance logic is now too permissive.
 
-Test coverage added
-- `tests/test_sec.py` now includes an ARM-style spacer-table regression where the percent cells are plain `100` and `90.6` text without literal `%` signs.
-- Expected result remains:
-  - `holder = SoftBank Group Corp.`
-  - `shares = 1025233999`
-  - `percent = 100.0`
+What is still good
+- `ARM` lock-up parsing is still correct.
+- `ARM` Form 4 parsing is still correct.
+- The app is not crashing.
+- The failure is isolated to principal-holder extraction in `ipo_tracker/sec.py`.
 
-Next validation
-1. Run the targeted sec tests locally.
-2. Refresh `ARM` in the app.
-3. Confirm `principal_holders[0].percent` is now present and non-null.
-4. Confirm the row still contains only canonical keys: `holder`, `shares`, `percent`.
+Most likely root cause
+- After allowing bare numeric percent cells, the parser can now accept rows from non-holder tables that happen to contain:
+  - one large numeric cell interpreted as `shares`
+  - one small numeric cell interpreted as `percent`
+- Current table-selection / row-validation heuristics are not strict enough to reject financial statement tables once those numbers are allowed.
+
+Required next fix
+1. Tighten table-level validation for principal-holder extraction.
+2. Tighten row-level validation for principal-holder extraction.
+3. Keep the bare numeric percent fallback, but only after the table/row has already passed stronger holder-specific checks.
+
+Suggested implementation direction
+- In `ipo_tracker/sec.py`, reject candidate holder tables when column names or header text include obvious financial-statement language such as:
+  - `fiscal quarter`
+  - `retained earnings`
+  - `additional paid-in capital`
+  - `accumulated other comprehensive income`
+  - `cash flows`
+  - `balance sheet`
+  - `total assets`
+  - `liabilities`
+- Reject rows where `holder` is mostly numeric or implausibly short.
+  - Examples that should be rejected immediately:
+    - `"4051"`
+    - `"6"`
+    - `"59"`
+- Require at least one plausible textual holder name before accepting a table.
+- Continue preserving the current semantic default for ARM once the correct table is found:
+  - first percent in row order
+  - still expected to resolve to pre-offering `100.0` unless intentionally changed later
+
+Tests to add
+- Add a regression in `tests/test_sec.py` for an ARM-style false-positive financial table so the parser refuses it.
+- Keep the existing ARM numeric-percent regression.
+- Expected outcome after both fixes:
+  - the financial statement table is rejected
+  - the actual ARM holder table is selected
+  - `principal_holders[0]` resolves to canonical keys only:
+    - `holder`
+    - `shares`
+    - `percent`
+
+Next live validation target
+1. Refresh `ARM` again.
+2. Confirm `principal_holders` no longer contains financial-statement rows.
+3. Confirm `principal_holders[0]` is a real holder row.
+4. Confirm no extra financial-statement keys leak into the parsed object.
+5. Confirm `percent` is present and non-null.
