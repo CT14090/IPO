@@ -78,6 +78,29 @@ class MarketSnapshotTests(unittest.TestCase):
 
         self.assertEqual(merged, latest_market)
 
+    def test_merge_market_snapshot_preserves_cached_market_failure_note(self) -> None:
+        previous_snapshot = {
+            "ipo_price": 50.44,
+            "current_price": 168.73,
+            "price_change_pct": 234.52,
+            "avg_volume_30d": 4_250_982,
+            "market_cap": 32_482_050_048,
+        }
+        latest_market = {
+            "ipo_price": None,
+            "current_price": None,
+            "price_change_pct": None,
+            "avg_volume_30d": None,
+            "market_cap": None,
+            "data_source": "yfinance",
+            "market_data_note": "Market data fetch failed: Too Many Requests. Rate limited. Try after a while. Reusing in-process market cache.",
+        }
+
+        merged = merge_market_snapshot(previous_snapshot, latest_market)
+
+        self.assertIn("Reusing in-process market cache.", merged["market_data_note"])
+        self.assertIn("Reusing previous snapshot market data.", merged["market_data_note"])
+
 
 if __name__ == "__main__":
     unittest.main()
