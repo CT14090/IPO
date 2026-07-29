@@ -555,8 +555,9 @@ def _parse_spacer_table_row(tr: Any) -> dict[str, Any] | None:
     if _is_placeholder_holder(holder):
         return None
 
-    shares = _parse_holder_measure("shares", value_cells[1]) if len(value_cells) > 1 else None
-    percent = _parse_holder_measure("percent", value_cells[2]) if len(value_cells) > 2 else None
+    measure_cells = value_cells[1:]
+    shares = _first_share_candidate(measure_cells)
+    percent = _first_percent_candidate(measure_cells)
     if shares is None and percent is None:
         return None
     if isinstance(shares, int) and shares <= 1000:
@@ -751,8 +752,28 @@ def _parse_holder_measure(key: str, text: str) -> int | float | str:
     return cleaned
 
 
+def _first_share_candidate(values: list[str]) -> int | None:
+    for value in values:
+        parsed = _parse_holder_measure("shares", value)
+        if isinstance(parsed, int) and parsed > 1000:
+            return parsed
+    return None
+
+
+def _first_percent_candidate(values: list[str]) -> float | None:
+    for value in values:
+        cleaned = _clean_cell_text(value)
+        if "%" not in cleaned:
+            continue
+        parsed = _parse_holder_measure("percent", cleaned)
+        if isinstance(parsed, (int, float)):
+            return float(parsed)
+    return None
+
+
 def _canonicalize_holder_row(row: pd.Series) -> dict[str, Any]:
     record: dict[str, Any] = {}
+    measure_texts: list[str] = []
     for column, value in row.items():
         if pd.isna(value):
             continue
@@ -765,6 +786,7 @@ def _canonicalize_holder_row(row: pd.Series) -> dict[str, Any]:
                 return {}
             record[key] = text
             continue
+        measure_texts.append(text)
         if key in {"shares", "percent", "voting_power"}:
             if key in record and isinstance(record[key], (int, float)):
                 continue
@@ -777,6 +799,14 @@ def _canonicalize_holder_row(row: pd.Series) -> dict[str, Any]:
         record[key] = text
     if "holder" not in record:
         return {}
+    if not isinstance(record.get("shares"), int):
+        share_candidate = _first_share_candidate(measure_texts)
+        if share_candidate is not None:
+            record["shares"] = share_candidate
+    if not isinstance(record.get("percent"), (int, float)):
+        percent_candidate = _first_percent_candidate(measure_texts)
+        if percent_candidate is not None:
+            record["percent"] = percent_candidate
     if len(record) == 1:
         return {}
     if not any(isinstance(record.get(key), (int, float)) for key in ("shares", "percent", "voting_power")):
