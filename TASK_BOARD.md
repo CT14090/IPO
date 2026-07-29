@@ -48,16 +48,17 @@
 - `ipo_tracker/insiders.py` retries the SEC owner-include Form 4 Atom feed up to 3 times for `429` and `503` responses, with short bounded backoff and `Retry-After` header support.
 - `ipo_tracker/insiders.py` spaces owner-include feed requests across companies with a short global minimum interval before each feed fetch, which appears to have resolved the ARM feed-error path in live use.
 - `ipo_tracker/sec.py` now promotes embedded multi-row principal-holder header rows into usable column names before canonicalizing records. This targets ARM-style tables where the real `Name / Number / Percent` headers sit inside the first body rows instead of in clean `<th>` columns.
+- `ipo_tracker/sec.py` now drops raw numeric placeholder columns and bare `%` artifacts during holder-row canonicalization so wide ARM-style tables do not leak keys like `"8"` or `"20"` into the parsed object.
 - `ipo_tracker/sec.py` had a later truncation regression on Tuesday, July 28, 2026; the missing bottom portion of `determine_effective_unlock_date(...)` and `enrich_company(...)` has now been restored on `main` so the module can import again.
 
 ## Covered By Tests
-- `tests/test_sec.py` covers lock-up extraction, fallback behavior, long-window early-release percent parsing, greenshoe disambiguation, early-release and earnings-trigger detection, 8-K amendment detection, cover-page IPO date extraction, holder parsing, embedded multi-row holder-header promotion, trading-day offsets, effective unlock date resolution, and confidence scoring.
+- `tests/test_sec.py` covers lock-up extraction, fallback behavior, long-window early-release percent parsing, greenshoe disambiguation, early-release and earnings-trigger detection, 8-K amendment detection, cover-page IPO date extraction, holder parsing, embedded multi-row holder-header promotion, trading-day offsets, effective unlock date resolution, confidence scoring, and suppression of stray numeric holder keys for the ARM-style embedded-header case.
 - `tests/test_discovery.py` covers source-name fallback and nameless-candidate skipping.
 - `tests/test_insiders.py` now covers owner-include Form 4 feed parsing, post-unlock filtering, direct XML filing links, HTML-to-XML companion fallback, zero-result lookup metadata, retry-after-rate-limit success, repeated-rate-limit feed failure, incremental history reuse when there are no new filings, incremental merge behavior when a newer filing appears, and insider-sale summary math that ignores embedded lookup metadata.
 - `tests/test_market.py` covers market-snapshot reuse when a previous good snapshot exists, explicit no-previous-snapshot note behavior, and the unchanged successful-market-data path.
 
 ## Still Open
-- Clean up residual holder-row noise for ARM-style tables: the live parsed row still contains stray numeric-string keys like `"8": "%"` and `"20": "%"`, so extraction is improved but not yet perfectly normalized.
+- Live-validate the ARM holder cleanup by confirming `principal_holders[0]` now contains only canonical keys such as `holder`, `shares`, and `percent`, with no stray numeric-string keys.
 - Decide whether the holder parser should prefer the post-offering percent (`90.6%`) or preserve only the pre-offering percent (`100%`) when both are present in ARM-style tables.
 - Live-validate the new market fallback diagnostics by checking whether `market_data_note` explicitly says `Previous snapshot market data available: yes.` or `Previous snapshot market data available: no.` during a Yahoo rate-limit refresh.
 - If the diagnostics show `Previous snapshot market data available: no.`, decide whether to add a deeper look-back query in `ipo_tracker/db.py` for the most recent non-null market snapshot instead of only the immediate latest snapshot.
@@ -83,7 +84,7 @@
 - Confirm `RDDT` still shows `effective_unlock_date = 2024-08-09` and live parsed Form 4 sales after the incremental-refresh change.
 - Confirm the app starts cleanly again after the restored `sec.py` tail.
 - Refresh `ARM` and inspect whether `principal_holders` now contains real holder rows instead of an empty list.
-- If ARM holder rows appear, inspect whether stray unlabeled keys still remain on the parsed object.
+- For `ARM`, inspect whether `principal_holders[0]` now has only canonical keys and no stray numeric-string placeholders.
 - Reproduce a Yahoo Finance rate-limit scenario and inspect `market_data_note`.
 - If `market_data_note` says `Previous snapshot market data available: no.`, treat the issue as missing reusable history rather than a broken merge.
 - If `market_data_note` says `Previous snapshot market data available: yes.` but market values are still empty, treat the issue as a real fallback bug.
