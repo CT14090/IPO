@@ -24,41 +24,41 @@ Codex may choose to update only this .md file to further clarify questions by pr
 
 ## Codex Handoff — 2026-07-29
 
-Minor ARM holder cleanup status on Wednesday, July 29, 2026:
+Wednesday, July 29, 2026 update after new ARM diagnostics showing:
+- `principal_holders = []`
+- `lockup_source = No filing text available`
+- notes still implied filing-text parsing in the old deploy output
 
-What I verified directly in `main`
-- The parser-side fix for the leaked ARM keys was already present in `ipo_tracker/sec.py` before this handoff refresh.
-- `_canonicalize_holder_row(...)` now drops:
-  - raw numeric column labels such as `"8"` / `"20"`
-  - bare `%` text artifacts
-- So the code path that should suppress the stray ARM keys is already live in source.
+Diagnosis
+- This was not the same ARM table-structure bug as before.
+- In this refresh, the app never obtained usable prospectus HTML, so the holder parser never ran.
+- Root problem = filing fetch miss / transient SEC access issue, not another embedded-header parsing miss.
 
-What I changed just now
-- Tightened `tests/test_sec.py` so the ARM-style embedded-header regression now asserts:
-  - parsed row count is still `1`
-  - the SoftBank row still maps to `holder`, `shares`, `percent`
-  - the parsed dict keys are exactly `{ "holder", "shares", "percent" }`
-- Updated `TASK_BOARD.md` so the board no longer describes the numeric-key cleanup as purely open work.
+What Codex changed in `main`
+- `ipo_tracker/sec.py`
+  - added bounded retry for SEC text/json fetches on transient `429` / `503`
+  - records the fetch failure reason as a short note such as `HTTP 429`
+  - stops rewarding confidence for `lock-up parsed from filing text` when the HTML was unavailable
+  - stops claiming `IPO date parsed from filing text` when the app fell back to the seeded watchlist date
+  - adds a clearer holder diagnostic: `Principal holder table not parsed because filing HTML was unavailable`
+- `tests/test_sec.py`
+  - added regression coverage for the missing-filing-HTML case so misleading confidence details are caught
 
-Current state
-- We now have:
-  - source-level fix present
-  - regression coverage strengthened
-- We do not yet have fresh live validation from the deployed app proving that the ARM diagnostics JSON no longer shows numeric-string keys.
+Important distinction now
+- If diagnostics show:
+  - `principal_holders = []`
+  - `No filing text available (...)`
+- then we should read that as a fetch-layer issue.
+- If diagnostics show real filing text but empty holders, that is a parser-layer issue.
 
-Best next validation target
-- Refresh the deployed app and inspect `ARM` diagnostics.
-- Expected result now:
-  - `principal_holders[0]` contains only canonical keys
-  - no `"8": "%"`
-  - no `"20": "%"`
+Best next live validation target
+1. Refresh the deployed app again.
+2. If ARM still misses HTML, confirm the notes now explicitly say something like:
+   - `Prospectus fetch failed during refresh: HTTP ...`
+3. Also confirm the confidence details no longer falsely say:
+   - `Lock-up term parsed from filing text`
+   - `IPO date parsed from filing text`
+   when the filing HTML was not fetched.
 
-What still remains conceptually open
-- product policy for wide holder tables with both pre-offering and post-offering metrics:
-  - keep pre-offering `%` only
-  - keep post-offering `%` only
-  - or move to a richer structured representation later
-- That is now a design decision, not the same bug as the leaked numeric keys.
-
-Use Claude only if useful for the design question above.
-For the numeric-key bug itself, Codex considers the code fix small and already handled; the next step is live validation, not deeper parser analysis.
+Claude is not needed unless we want broader strategy ideas for SEC fetch resilience beyond this bounded retry + truthful diagnostics pass.
+This specific bug was minor and has already been addressed in code.
