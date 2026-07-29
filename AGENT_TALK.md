@@ -24,51 +24,37 @@ Codex may choose to update only this .md file to further clarify questions by pr
 
 ## Codex Handoff — 2026-07-29
 
-Wednesday, July 29, 2026 follow-up after the user reported that the second SEC refresh again took more than 30 seconds and no longer showed a big improvement over the first run.
+Wednesday, July 29, 2026 live follow-up after the user re-tested the deployed app.
 
-New diagnosis from the latest ARM diagnostics
-- Form 4 reuse is still working correctly.
-- Evidence from ARM:
-  - `candidate_filings = 1`
-  - `documents_fetched = 1`
-  - `xml_documents = 1`
-  - `reused_transactions = 35`
-  - `reused_filings = 14`
-- So the second-run slowdown is no longer mainly a Form 4 problem.
+What is now confirmed live
+- The repeat-refresh performance fix is working again.
+- User report: first SEC refresh was materially slower; second refresh decreased significantly.
+- Latest ARM diagnostics also show `market_data_note` includes `Reusing in-process market cache.`
+- That means the new in-process Yahoo market cache is active in production, not just in code.
 
-Most likely remaining bottleneck
-- market refreshes via Yahoo / `yfinance`
-- latest ARM diagnostics show:
-  - all market values null
-  - `market_data_note = Market data fetch failed: Too Many Requests. Rate limited. Try after a while. Previous snapshot market data available: no.`
-- But historically ARM previously did have non-null market values, so `no` strongly suggested our reuse path was only checking the immediately latest snapshot instead of the latest non-null historical snapshot.
-- Also, every refresh was still re-hitting Yahoo because we had no in-process market cache.
+Latest ARM live facts
+- `insider_sales.lookup.status = sales_parsed`
+- `candidate_filings = 1`
+- `documents_fetched = 1`
+- `xml_documents = 1`
+- `reused_transactions = 39`
+- `reused_filings = 17`
+- `new_transactions_parsed = 1`
+- `principal_holders = [{"holder": "SoftBank Group Corp.", "shares": 1025233999}]`
+- `market_data_note = Market data fetch failed: Too Many Requests. Rate limited. Try after a while. Reusing in-process market cache. Previous snapshot market data available: no.`
 
-What Codex changed just now
-- `ipo_tracker/market.py`
-  - added a short-lived in-process cache for `fetch_market_data(ticker, ipo_date)`
-  - repeat refreshes in the same deployed app process can now reuse the previous Yahoo result, including a recent rate-limit failure, instead of immediately refetching everything
-  - cached responses append `Reusing in-process market cache.` in the note
-- `ipo_tracker/db.py`
-  - added historical backfill for market fields from the latest non-null market snapshot, not just the immediately latest snapshot
-  - if the newest snapshot has null market data but an older snapshot has values, dashboard rows now carry forward those historical values for reuse
-  - if the newest note is a market-fetch failure and an older good market snapshot is used, the note now appends:
-    - `Previous snapshot market data available: yes.`
-    - `Backfilled previous snapshot market data from local history.`
-- `tests/test_market.py`
-  - added coverage for note preservation when a cached market failure is merged with reusable snapshot data
+What remains open
+1. Historical market backfill still looks incomplete for ARM.
+   - The note still says `Previous snapshot market data available: no.`
+   - Since ARM had historical non-null market values in earlier user-provided diagnostics, either:
+     - the deployed DB snapshot history no longer contains a good ARM market row, or
+     - our latest-non-null backfill query/merge path still misses a valid older row.
+2. ARM holder parsing is cleaner, but still incomplete.
+   - The live row now has only canonical keys and no stray numeric placeholders, which is good.
+   - But it still only surfaces `holder` and `shares`, with no `percent`.
+   - We still need a decision on whether to preserve the pre-offering percent, the post-offering percent, or both when ARM-style tables expose multiple percent columns.
 
-Expected live effect
-1. First refresh may still be somewhat cold.
-2. Second refresh in the same app process should be meaningfully faster because:
-   - Form 4 data is already incremental
-   - market calls should now come from the in-process cache instead of Yahoo
-3. If Yahoo is rate-limiting but older market history exists, diagnostics should stop saying `Previous snapshot market data available: no.` and should instead backfill from local history.
-
-Best next live validation target
-- Refresh twice again after this deploy.
-- Check:
-  - whether second refresh becomes materially faster
-  - whether ARM `market_data_note` changes from `... available: no.` to a historical-backfill / cache-reuse note
-
-Claude is not required for this step unless we still see poor second-run timing after the market cache and historical-backfill pass. At that point the remaining issue would likely be broader refresh orchestration rather than parser logic.
+Interpretation
+- No Claude analysis is required for the repeat-refresh speed issue anymore; that part is live-confirmed.
+- Claude may still be useful for thinking through the best semantic rule for ARM-style percent selection if we want a stronger parsing policy before changing code.
+- If we do not need Claude, the next coding target should be the historical-market-backfill miss, because that is now the clearest remaining bug surfaced by live diagnostics.
