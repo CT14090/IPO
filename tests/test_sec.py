@@ -283,6 +283,50 @@ class SecParserTests(unittest.TestCase):
         self.assertAlmostEqual(holders[0]["percent"], 100.0)
         self.assertEqual(set(holders[0].keys()), {"holder", "shares", "percent"})
 
+    def test_extract_principal_holders_spacer_arm_table_keeps_first_percent(self) -> None:
+        html = """
+        <html>
+          <body>
+            <table>
+              <tr>
+                <th>Name of Beneficial Owner</th>
+                <th width="1%"></th>
+                <th>Shares beneficially owned prior to this offering</th>
+                <th width="1%"></th>
+                <th>%</th>
+                <th width="1%"></th>
+                <th>Shares being sold</th>
+                <th width="1%"></th>
+                <th>Shares beneficially owned after this offering</th>
+                <th width="1%"></th>
+                <th>%</th>
+              </tr>
+              <tr>
+                <td>SoftBank Group Corp.</td>
+                <td width="1%">&nbsp;</td>
+                <td>1,025,233,999</td>
+                <td width="1%">&nbsp;</td>
+                <td>100%</td>
+                <td width="1%">&nbsp;</td>
+                <td>95,500,000</td>
+                <td width="1%">&nbsp;</td>
+                <td>929,733,999</td>
+                <td width="1%">&nbsp;</td>
+                <td>90.6%</td>
+              </tr>
+            </table>
+          </body>
+        </html>
+        """
+
+        holders = extract_principal_holders(html)
+
+        self.assertEqual(len(holders), 1)
+        self.assertEqual(holders[0]["holder"], "SoftBank Group Corp.")
+        self.assertEqual(holders[0]["shares"], 1_025_233_999)
+        self.assertAlmostEqual(holders[0]["percent"], 100.0)
+        self.assertEqual(set(holders[0].keys()), {"holder", "shares", "percent"})
+
     def test_extract_principal_holders_rejects_toc_only_table(self) -> None:
         html = """
         <html>
