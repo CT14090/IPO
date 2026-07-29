@@ -4,11 +4,16 @@ import unittest
 from datetime import date
 from unittest.mock import patch
 
+import pandas as pd
+
 from ipo_tracker.config import DEFAULT_LOCKUP_DAYS
 from ipo_tracker.market import calculate_price_change_pct
 from ipo_tracker.sec import (
     LockupConditions,
     _first_percent_candidate,
+    _is_plausible_holder_name,
+    _table_contains_excluded_holder_language,
+    _table_has_holder_signals,
     add_trading_days,
     assess_data_confidence,
     determine_effective_unlock_date,
@@ -378,6 +383,84 @@ class SecParserTests(unittest.TestCase):
         )
 
         self.assertEqual(percent, 100.0)
+
+    def test_table_holder_signals_reject_financial_statement_table(self) -> None:
+        financial_table = pd.DataFrame(
+            [
+                {
+                    "Name": "4051",
+                    "Fiscal Quarter Ended June 30, 2023 AdditionalPaid-in Capital": "1,025,234,000",
+                    "Fiscal Quarter Ended June 30, 2023 RetainedEarnings": "2",
+                    "Fiscal Quarter Ended June 30, 2023 AccumulatedOtherComprehensiveIncome (Loss)": "9",
+                }
+            ]
+        )
+
+        self.assertTrue(_table_contains_excluded_holder_language(financial_table))
+        self.assertFalse(_table_has_holder_signals(financial_table))
+
+    def test_plausible_holder_name_rejects_numeric_values(self) -> None:
+        self.assertFalse(_is_plausible_holder_name("4051"))
+        self.assertFalse(_is_plausible_holder_name("6"))
+        self.assertTrue(_is_plausible_holder_name("SoftBank Group Corp."))
+
+    def test_extract_principal_holders_rejects_financial_statement_table_and_keeps_arm_row(self) -> None:
+        html = """
+        <html>
+          <body>
+            <table>
+              <tr>
+                <th>Name</th>
+                <th>Fiscal Quarter Ended June 30, 2023 AdditionalPaid-in Capital</th>
+                <th>Fiscal Quarter Ended June 30, 2023 RetainedEarnings</th>
+                <th>Fiscal Quarter Ended June 30, 2023 AccumulatedOtherComprehensiveIncome (Loss)</th>
+              </tr>
+              <tr>
+                <td>4051</td>
+                <td>1,025,234,000</td>
+                <td>2</td>
+                <td>9</td>
+              </tr>
+            </table>
+            <table>
+              <tr>
+                <th>Name of Beneficial Owner</th>
+                <th width="1%"></th>
+                <th>Shares beneficially owned prior to this offering</th>
+                <th width="1%"></th>
+                <th>%</th>
+                <th width="1%"></th>
+                <th>Shares being sold</th>
+                <th width="1%"></th>
+                <th>Shares beneficially owned after this offering</th>
+                <th width="1%"></th>
+                <th>%</th>
+              </tr>
+              <tr>
+                <td>SoftBank Group Corp.</td>
+                <td width="1%">&nbsp;</td>
+                <td>1,025,233,999</td>
+                <td width="1%">&nbsp;</td>
+                <td>100</td>
+                <td width="1%">&nbsp;</td>
+                <td>95,500,000</td>
+                <td width="1%">&nbsp;</td>
+                <td>929,733,999</td>
+                <td width="1%">&nbsp;</td>
+                <td>90.6</td>
+              </tr>
+            </table>
+          </body>
+        </html>
+        """
+
+        holders = extract_principal_holders(html)
+
+        self.assertEqual(len(holders), 1)
+        self.assertEqual(holders[0]["holder"], "SoftBank Group Corp.")
+        self.assertEqual(holders[0]["shares"], 1_025_233_999)
+        self.assertAlmostEqual(holders[0]["percent"], 100.0)
+        self.assertEqual(set(holders[0].keys()), {"holder", "shares", "percent"})
 
     def test_extract_principal_holders_rejects_toc_only_table(self) -> None:
         html = """

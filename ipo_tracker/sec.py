@@ -59,6 +59,37 @@ PRINCIPAL_TABLE_MATCHES = (
     "Selling Stockholders",
 )
 
+HOLDER_TABLE_SIGNALS = (
+    "beneficial owner",
+    "beneficial ownership",
+    "beneficial shareholder",
+    "principal stockholder",
+    "principal and selling",
+    "shares beneficially",
+    "selling stockholder",
+    "stockholder",
+    "shareholder",
+    "percent of class",
+    "voting power",
+)
+
+EXCLUDED_HOLDER_TABLE_KEYWORDS = (
+    "fiscal quarter",
+    "retained earnings",
+    "additional paid-in capital",
+    "additional paid in capital",
+    "accumulated other comprehensive income",
+    "cash flows",
+    "balance sheet",
+    "total assets",
+    "total liabilities",
+    "liabilities",
+    "stockholders' equity",
+    "shareholders' equity",
+    "net income",
+    "operating activities",
+)
+
 HOLDER_PLACEHOLDERS = {
     "beneficial owner", "beneficial owners", "holder", "holders", "name",
     "name of beneficial owner", "name of beneficial shareholder", "principal stockholder", "principal stockholders",
@@ -732,6 +763,19 @@ def _is_placeholder_holder(text: str) -> bool:
     return normalized in HOLDER_PLACEHOLDERS
 
 
+def _is_plausible_holder_name(text: str) -> bool:
+    cleaned = _clean_cell_text(text)
+    if not cleaned or _is_placeholder_holder(cleaned):
+        return False
+    letters = sum(character.isalpha() for character in cleaned)
+    digits = sum(character.isdigit() for character in cleaned)
+    if letters < 2:
+        return False
+    if digits > letters * 2:
+        return False
+    return bool(re.search(r"[A-Za-z]{2,}", cleaned))
+
+
 def _parse_holder_measure(key: str, text: str) -> int | float | str:
     cleaned = _clean_cell_text(text)
     if key == "shares":
@@ -780,6 +824,20 @@ def _first_percent_candidate(values: list[str]) -> float | None:
     return fallback_percent
 
 
+def _table_contains_excluded_holder_language(table: pd.DataFrame) -> bool:
+    fragments = [str(column) for column in table.columns]
+    fragments.extend(str(cell) for cell in table.head(6).fillna("").astype(str).to_numpy().flatten())
+    haystack = " ".join(_clean_cell_text(fragment).lower() for fragment in fragments if fragment)
+    return any(keyword in haystack for keyword in EXCLUDED_HOLDER_TABLE_KEYWORDS)
+
+
+def _table_has_holder_signals(table: pd.DataFrame) -> bool:
+    fragments = [str(column) for column in table.columns]
+    fragments.extend(str(cell) for cell in table.head(6).fillna("").astype(str).to_numpy().flatten())
+    haystack = " ".join(_clean_cell_text(fragment).lower() for fragment in fragments if fragment)
+    return any(signal in haystack for signal in HOLDER_TABLE_SIGNALS)
+
+
 def _canonicalize_holder_row(row: pd.Series) -> dict[str, Any]:
     record: dict[str, Any] = {}
     measure_texts: list[str] = []
@@ -791,7 +849,7 @@ def _canonicalize_holder_row(row: pd.Series) -> dict[str, Any]:
             continue
         key = _normalize_holder_key(str(column))
         if key == "holder":
-            if _is_placeholder_holder(text):
+            if not _is_plausible_holder_name(text):
                 return {}
             record[key] = text
             continue
@@ -838,7 +896,7 @@ def _table_score(table: pd.DataFrame) -> int:
         cell_text = str(cell).lower()
         if "share" in cell_text or "%" in cell_text:
             score += 1
-        if any(token in cell_text for token in ("director", "officer", "fund", "capital", "beneficially owned")):
+        if any(token in cell_text for token in ("director", "officer", "fund", "beneficially owned")):
             score += 1
     return score
 
@@ -1013,6 +1071,10 @@ def extract_principal_holders(html_text: str) -> list[dict[str, Any]]:
 
         for table in candidate_tables:
             if not _table_has_real_numeric_values(table):
+                continue
+            if _table_contains_excluded_holder_language(table):
+                continue
+            if not _table_has_holder_signals(table):
                 continue
             extracted_rows: list[dict[str, Any]] = []
             for _, row in table.head(12).iterrows():
