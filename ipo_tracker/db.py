@@ -85,6 +85,115 @@ def _float_or_none(value) -> float | None:
         return None
 
 
+def _latest_non_null_market_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT c.ticker AS market_ticker, s.*
+        FROM company_snapshots s
+        INNER JOIN companies c ON c.id = s.company_id
+        INNER JOIN (
+            SELECT c.ticker AS market_ticker, MAX(s.id) AS max_id
+            FROM company_snapshots s
+            INNER JOIN companies c ON c.id = s.company_id
+            WHERE ipo_price IS NOT NULL
+               OR current_price IS NOT NULL
+               OR price_change_pct IS NOT NULL
+               OR avg_volume_30d IS NOT NULL
+               OR market_cap IS NOT NULL
+            GROUP BY c.ticker
+        ) latest ON latest.max_id = s.id
+        ORDER BY s.id DESC
+        """
+    ).fetchall()
+
+
+def _backfill_market_history(conn: sqlite3.Connection) -> None:
+    for row in _latest_non_null_market_rows(conn):
+        conn.execute(
+            """
+            INSERT INTO company_market_history (
+                ticker,
+                ipo_price,
+                current_price,
+                price_change_pct,
+                avg_volume_30d,
+                market_cap,
+                market_data_note
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(ticker) DO UPDATE SET
+                ipo_price = excluded.ipo_price,
+                current_price = excluded.current_price,
+                price_change_pct = excluded.price_change_pct,
+                avg_volume_30d = excluded.avg_volume_30d,
+                market_cap = excluded.market_cap,
+                market_data_note = excluded.market_data_note,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                row["market_ticker"],
+                row["ipo_price"],
+                row["current_price"],
+                row["price_change_pct"],
+                row["avg_volume_30d"],
+                row["market_cap"],
+                row["market_data_note"],
+            ),
+        )
+
+
+def _persist_market_history(
+    conn: sqlite3.Connection,
+    *,
+    company_id: int,
+    ipo_price: float | None,
+    current_price: float | None,
+    price_change_pct: float | None,
+    avg_volume_30d: int | None,
+    market_cap: int | None,
+    market_data_note: str,
+) -> None:
+    if all(value is None for value in (ipo_price, current_price, price_change_pct, avg_volume_30d, market_cap)):
+        return
+    ticker_row = conn.execute(
+        "SELECT ticker FROM companies WHERE id = ?",
+        (company_id,),
+    ).fetchone()
+    if ticker_row is None:
+        raise ValueError(f"Unknown company_id for market history persistence: {company_id}")
+    conn.execute(
+        """
+        INSERT INTO company_market_history (
+            ticker,
+            ipo_price,
+            current_price,
+            price_change_pct,
+            avg_volume_30d,
+            market_cap,
+            market_data_note
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(ticker) DO UPDATE SET
+            ipo_price = excluded.ipo_price,
+            current_price = excluded.current_price,
+            price_change_pct = excluded.price_change_pct,
+            avg_volume_30d = excluded.avg_volume_30d,
+            market_cap = excluded.market_cap,
+            market_data_note = excluded.market_data_note,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (
+            ticker_row["ticker"],
+            ipo_price,
+            current_price,
+            price_change_pct,
+            avg_volume_30d,
+            market_cap,
+            market_data_note,
+        ),
+    )
+
+
 def initialize_database() -> None:
     with get_connection() as conn:
         conn.execute(
@@ -134,6 +243,20 @@ def initialize_database() -> None:
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS company_market_history (
+                ticker TEXT PRIMARY KEY,
+                ipo_price REAL,
+                current_price REAL,
+                price_change_pct REAL,
+                avg_volume_30d INTEGER,
+                market_cap INTEGER,
+                market_data_note TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS webhook_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 company_id INTEGER NOT NULL,
@@ -158,6 +281,7 @@ def initialize_database() -> None:
         _ensure_column(conn, "company_snapshots", "confidence_score", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(conn, "company_snapshots", "confidence_label", "TEXT NOT NULL DEFAULT 'Seeded'")
         _ensure_column(conn, "company_snapshots", "confidence_details", "TEXT NOT NULL DEFAULT ''")
+        _backfill_market_history(conn)
         conn.commit()
 
 
@@ -261,6 +385,16 @@ def upsert_snapshot(
                 notes,
             ),
         )
+        _persist_market_history(
+            conn,
+            company_id=company_id,
+            ipo_price=ipo_price,
+            current_price=current_price,
+            price_change_pct=price_change_pct,
+            avg_volume_30d=avg_volume_30d,
+            market_cap=market_cap,
+            market_data_note=market_data_note,
+        )
         conn.commit()
 
 
@@ -280,42 +414,32 @@ def fetch_latest_snapshots() -> dict[int, sqlite3.Row]:
         return {row["company_id"]: row for row in rows}
 
 
-def fetch_latest_non_null_market_snapshots() -> dict[int, sqlite3.Row]:
+def fetch_market_history() -> dict[str, sqlite3.Row]:
     with get_connection() as conn:
         rows = conn.execute(
             """
-            SELECT s.*
-            FROM company_snapshots s
-            INNER JOIN (
-                SELECT company_id, MAX(id) AS max_id
-                FROM company_snapshots
-                WHERE ipo_price IS NOT NULL
-                   OR current_price IS NOT NULL
-                   OR price_change_pct IS NOT NULL
-                   OR avg_volume_30d IS NOT NULL
-                   OR market_cap IS NOT NULL
-                GROUP BY company_id
-            ) latest ON latest.max_id = s.id
+            SELECT ticker, ipo_price, current_price, price_change_pct, avg_volume_30d, market_cap, market_data_note, updated_at
+            FROM company_market_history
             """
         ).fetchall()
-        return {row["company_id"]: row for row in rows}
+        return {row["ticker"]: row for row in rows}
 
 
 def load_dashboard_rows() -> list[dict]:
     companies = fetch_companies()
     snapshots = fetch_latest_snapshots()
-    market_snapshots = fetch_latest_non_null_market_snapshots()
+    market_history = fetch_market_history()
     rows: list[dict] = []
     for row in companies:
         snapshot = snapshots.get(row["id"])
-        market_snapshot = snapshot if _snapshot_has_market_values(snapshot) else market_snapshots.get(row["id"])
+        snapshot_has_market_values = _snapshot_has_market_values(snapshot)
+        history_row = market_history.get(row["ticker"])
+        reused_market_history = not snapshot_has_market_values and history_row is not None
+        market_row = snapshot if snapshot_has_market_values else history_row
         market_note = _row_value(snapshot, "market_data_note", "")
-        if (
-            snapshot is not None
-            and market_snapshot is not None
-            and snapshot["id"] != market_snapshot["id"]
-            and market_note.startswith("Market data fetch failed:")
-        ):
+        if snapshot is None and market_row is not None:
+            market_note = _row_value(market_row, "market_data_note", "")
+        if reused_market_history and market_note.startswith("Market data fetch failed:"):
             market_note = _append_note(
                 _append_note(market_note, MARKET_PREVIOUS_AVAILABLE_NOTE),
                 MARKET_HISTORY_BACKFILLED_NOTE,
@@ -338,11 +462,11 @@ def load_dashboard_rows() -> list[dict]:
                 "lockup_source": _row_value(snapshot, "lockup_source", "Seeded watchlist"),
                 "lockup_conditions": json.loads(_row_value(snapshot, "lockup_conditions_json", "{}")),
                 "insider_sales": json.loads(_row_value(snapshot, "insider_sales_json", "[]")),
-                "ipo_price": _float_or_none(_row_value(market_snapshot, "ipo_price", None)),
-                "current_price": _float_or_none(_row_value(market_snapshot, "current_price", None)),
-                "price_change_pct": _float_or_none(_row_value(market_snapshot, "price_change_pct", None)),
-                "avg_volume_30d": _int_or_none(_row_value(market_snapshot, "avg_volume_30d", None)),
-                "market_cap": _int_or_none(_row_value(market_snapshot, "market_cap", None)),
+                "ipo_price": _float_or_none(_row_value(market_row, "ipo_price", None)),
+                "current_price": _float_or_none(_row_value(market_row, "current_price", None)),
+                "price_change_pct": _float_or_none(_row_value(market_row, "price_change_pct", None)),
+                "avg_volume_30d": _int_or_none(_row_value(market_row, "avg_volume_30d", None)),
+                "market_cap": _int_or_none(_row_value(market_row, "market_cap", None)),
                 "market_data_note": market_note,
                 "confidence_score": int(_row_value(snapshot, "confidence_score", 0)),
                 "confidence_label": _row_value(snapshot, "confidence_label", "Seeded"),
