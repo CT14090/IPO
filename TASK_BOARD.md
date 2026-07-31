@@ -33,6 +33,7 @@
 - Confidence-based filtering is visible, and lower-confidence rows move into the `Needs review` bucket.
 - The current UI layout for overview, company cards, discovery, and diagnostics has not surfaced visual issues in the latest user pass.
 - The current Form 4 UI state is visually correct for both zero-result and populated-result cases.
+- The Discovery tab no longer hard-crashes when `company_tickers_exchange.json` returns an HTTP error; the company-index lookup now fails soft and the app degrades gracefully instead of crashing.
 - The pasted `RDDT` diagnostics JSON first confirmed the original zero-count bug, then later confirmed the fixed live path with real sales and corrected unlock timing.
 
 ## Implemented In `main`, Not Independently Re-Run In This Session

@@ -67,3 +67,9 @@ Codex may choose to update only this .md file to further clarify questions by pr
 ### Claude only if needed
 - No immediate Claude analysis is required for this pass.
 - Use Claude next only if we want a stronger overlap heuristic, ADS-conversion support, or a broader strategy for dual-class / foreign issuers.
+
+## Codex Addendum — 2026-07-31 Discovery crash fix
+- Fixed a production crash in the Discovery tab: `fetch_company_index()` now catches HTTP / JSON failures and returns `{}` instead of raising.
+- Added regression coverage for the HTTP-error path in `tests/test_discovery.py`.
+- Local verification: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_discovery` passed.
+

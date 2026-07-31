@@ -77,14 +77,19 @@ class DiscoveryCandidate:
 
 @lru_cache(maxsize=1)
 def fetch_company_index() -> dict[int, dict[str, str]]:
-    response = requests.get(
-        "https://www.sec.gov/files/company_tickers_exchange.json",
-        headers=sec_headers(),
-        timeout=30,
-    )
-    response.raise_for_status()
+    try:
+        response = requests.get(
+            "https://www.sec.gov/files/company_tickers_exchange.json",
+            headers=sec_headers(),
+            timeout=30,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except (requests.RequestException, ValueError):
+        return {}
+
     index: dict[int, dict[str, str]] = {}
-    for row in response.json().get("data", []):
+    for row in payload.get("data", []):
         if len(row) < 3:
             continue
         cik = int(row[0])

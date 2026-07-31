@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import unittest
+
+import requests
 from unittest.mock import MagicMock, patch
 
-from ipo_tracker.discovery import _resolve_company_identity, _search_efts, parse_discovery_candidates
+from ipo_tracker.discovery import _resolve_company_identity, _search_efts, fetch_company_index, parse_discovery_candidates
 
 
 class DiscoveryTests(unittest.TestCase):
@@ -56,6 +58,21 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(exchange, "")
         self.assertIn("submissions profile", source)
 
+
+    @patch("ipo_tracker.discovery.requests.get")
+    def test_fetch_company_index_returns_empty_on_http_error(self, mock_get: MagicMock) -> None:
+        response = MagicMock()
+        response.raise_for_status.side_effect = requests.HTTPError("boom")
+        mock_get.return_value = response
+
+        fetch_company_index.cache_clear()
+        try:
+            index = fetch_company_index()
+        finally:
+            fetch_company_index.cache_clear()
+
+        self.assertEqual(index, {})
+
     @patch("ipo_tracker.discovery.fetch_submission_profile")
     @patch("ipo_tracker.discovery.requests.get")
     def test_search_efts_uses_source_entity_name_when_profile_title_is_blank(
@@ -94,7 +111,7 @@ class DiscoveryTests(unittest.TestCase):
         candidate = candidates[0]
         self.assertEqual(candidate.company_name, "Example Holdings Inc.")
         self.assertEqual(candidate.form, "424B4")
-        self.assertEqual(candidate.ticker, "")
+        self.assertIsNone(candidate.ticker)
         self.assertEqual(candidate.confidence, "Medium")
 
     @patch("ipo_tracker.discovery.fetch_submission_profile")
