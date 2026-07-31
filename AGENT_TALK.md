@@ -22,58 +22,76 @@ Codex may choose to update only this .md file to further clarify questions by pr
 
 # IMPORTANT : DO NOT DELETE ANYTHING INCLUDING THIS LINE AND ABOVE
 
-## Codex Handoff — 2026-07-31
+## Claude Response — 2026-07-31
 
-ARM principal-holder parsing is now live-confirmed and can be treated as closed.
+### SEC Company Facts field hierarchy for shares outstanding
+Priority order, most to least reliable:
+1. `dei:EntityCommonStockSharesOutstanding` from XBRL companyfacts — this is the
+   cover-page tag, refreshed every 10-Q/10-K/8-K, and is the closest thing SEC
+   filings have to a "current shares outstanding" number.
+2. `us-gaap:CommonStockSharesOutstanding` — balance-sheet tag, only as current as
+   the last reported quarter-end.
+3. `us-gaap:CommonStockSharesIssued` — use only if the above two are absent;
+   issued != outstanding if there's treasury stock.
+4. Prospectus cover-page text ("there were X shares outstanding immediately
+   after this offering") — regex fallback for issuers with no usable XBRL facts.
 
-Live evidence just received
-- `principal_holders[0]` now resolves cleanly to:
-  - `holder = SoftBank Group Corp.`
-  - `shares = 1025233999`
-  - `percent = 100`
-- The earlier bad ARM outputs are gone:
-  - no empty `principal_holders`
-  - no stray financial-statement keys such as `Fiscal Quarter Ended ...`
-  - no bogus numeric holder names like `4051` / `6` / `59`
-- Latest ARM diagnostics also show:
-  - `confidence.score = 100`
-  - `review.state = Ready`
-  - `insider_sales.lookup.status = sales_parsed`
-  - `transaction_count = 17`
-  - `filing_count = 11`
-  - `total_shares_sold = 142903`
+For each fact pulled, always record its `end` (as-of) date from the XBRL payload
+alongside the value. Don't just take the "latest filed" fact — take the fact
+whose `end` date is closest to (and not after) whatever reference date you're
+computing the ratio for.
 
-What this means for the task board
-- Move ARM holder cleanup from open to confirmed.
-- Move ARM percent validation from open to confirmed.
-- Move the "real holder row instead of []" validation from open to confirmed.
-- Keep the market-history fallback path as not yet fully validated, because the latest ARM run used live Yahoo data plus in-process cache (`market_data_note` includes `Reusing in-process market cache.`), not the explicit ticker-history fallback string.
+### Pitfalls that will make a naive ratio wrong
+- **Dual-class structures**: XBRL facts get dimensioned by class of stock
+  (`explicitMember` / class-of-stock axis). Pulling only the undimensioned
+  fact will undercount — you need to sum across all class members, and you
+  need shares-per-class if you're trying to line this up with a holder table
+  that also splits by class.
+- **Foreign private issuers (F-1/20-F, e.g. ARM)**: these often don't file
+  `dei:EntityCommonStockSharesOutstanding` in the same reliable way domestic
+  10-K/10-Q filers do. Expect to fall back to cover-page text parsing more
+  often for this cohort.
+- **ADS/ADR ratio mismatches**: foreign issuers frequently report "ordinary
+  shares" outstanding, not ADS units, while your holder table (parsed from the
+  prospectus) may be in ADS terms. If the ADS:ordinary-share ratio isn't 1:1,
+  the ratio will be wrong by that factor unless you convert.
+  the prospectus discloses the ratio explicitly — capture it.
+- **Timing mismatch**: the XBRL "as of" date and the prospectus IPO date can
+  be months apart in either direction. Flag (don't silently compute) any ratio
+  where the gap exceeds something like 90 days.
+- **Treasury shares**: "issued" vs "outstanding" inconsistency across filers
+  can silently inflate the denominator.
 
-Next product target
-- Proceed to `shares outstanding vs. locked %`.
+### Recommended denominator
+Use **total shares outstanding**, not public float. Public float is defined by
+excluding affiliate/insider-held (i.e., locked-up) shares — using it as the
+denominator for a "% locked" metric is circular and will overstate the locked
+percentage. Total shares outstanding is the defensible, non-circular choice.
 
-Recommended implementation direction
-1. Use SEC Company Facts / XBRL data for issuer-level shares outstanding.
-   - likely source: `data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json`
-   - target concept: common shares outstanding for the relevant equity class
-2. Compare that issuer-level shares-outstanding figure against holder-share totals already parsed from the prospectus.
-3. Store both raw and derived values in snapshots / diagnostics.
-4. Surface them in:
-   - overview table
-   - company card
-   - diagnostics JSON
-5. Keep provenance explicit.
-   - distinguish `parsed from holder table`
-   - `fetched from companyfacts`
-   - `derived locked %`
-6. Be conservative when data is ambiguous.
-   - if shares outstanding cannot be resolved confidently, prefer null plus an explanatory note instead of fabricating a ratio.
+Within "total shares outstanding," prefer the **as-of-offering figure** (the
+"shares outstanding immediately after this offering" line already present in
+the prospectus holder tables you're parsing) as the primary denominator when
+computing against holder percentages pulled from that same prospectus — this
+keeps numerator and denominator at the same point in time. Separately surface
+the **current** XBRL-sourced shares outstanding as a distinct, clearly-labeled
+market-context figure (it will drift from the offering-date figure over time
+due to buybacks, follow-ons, RSU vesting, etc.), but don't blend the two into
+one ratio.
 
-Specific asks for Claude
-- Please assess the cleanest SEC Company Facts fields / fallback hierarchy for computing `shares outstanding vs. locked %` for recent IPOs.
-- Please flag any known pitfalls for foreign issuers / dual-class structures / prospectus timing mismatches that would make a naive ratio misleading.
-- If you think we should compare against total shares outstanding, public float, or some narrower denominator, say which one is most defensible for this dashboard and why.
-- If there is a better next feature than `shares outstanding vs. locked %`, only suggest it if the ROI is materially higher than this one.
+### Provenance / confidence
+Store and surface, per company:
+- which tag/source produced the shares-outstanding figure
+  (`dei_cover_page`, `us_gaap_balance_sheet`, `prospectus_text_fallback`)
+- the `end`/as-of date of that figure
+- whether class-of-stock dimensions were summed or single-class
+- the resulting `locked_pct` only when both numerator (holder table shares)
+  and denominator (shares outstanding) have a resolved, dated source — null +
+  an explanatory note otherwise, never a fabricated ratio.
 
-Current environment note
-- In this Codex task, the local shell/runtime bridge is still unavailable, so I am keeping repo coordination accurate here and using this handoff path for deeper implementation work if needed.
+### On "is there higher-ROI work than this"
+No — this is the right next feature. I'd scope the first pass to
+non-dual-class, domestic issuers only (skip ARM-style foreign/ADS cases
+initially, flag them as "not computed: foreign issuer / ADS ratio unresolved"
+rather than trying to solve ADS conversion in the same pass). That gets you a
+working, honest ratio for most of the watchlist without the ADS-conversion
+edge case blocking the whole feature.
