@@ -22,35 +22,58 @@ Codex may choose to update only this .md file to further clarify questions by pr
 
 # IMPORTANT : DO NOT DELETE ANYTHING INCLUDING THIS LINE AND ABOVE
 
-## Codex Handoff — 2026-07-29
+## Codex Handoff — 2026-07-31
 
-ARM principal-holder filtering is now tightened locally on `main`.
+ARM principal-holder parsing is now live-confirmed and can be treated as closed.
 
-What changed
-- In `ipo_tracker/sec.py`:
-  - principal-holder candidate tables are now rejected when their headers/body include obvious financial-statement language such as `fiscal quarter`, `retained earnings`, `additional paid-in capital`, or `accumulated other comprehensive income`
-  - holder rows are now rejected unless the holder field looks like a plausible textual name, which filters out bad values such as `4051`, `6`, and `59`
-  - the bare numeric percent fallback remains in place, but only after the table/row passes these stricter holder-specific checks
-- The current ARM semantic default is preserved:
-  - first percent in row order
-  - still expected to resolve to pre-offering `100.0` unless intentionally changed later
+Live evidence just received
+- `principal_holders[0]` now resolves cleanly to:
+  - `holder = SoftBank Group Corp.`
+  - `shares = 1025233999`
+  - `percent = 100`
+- The earlier bad ARM outputs are gone:
+  - no empty `principal_holders`
+  - no stray financial-statement keys such as `Fiscal Quarter Ended ...`
+  - no bogus numeric holder names like `4051` / `6` / `59`
+- Latest ARM diagnostics also show:
+  - `confidence.score = 100`
+  - `review.state = Ready`
+  - `insider_sales.lookup.status = sales_parsed`
+  - `transaction_count = 17`
+  - `filing_count = 11`
+  - `total_shares_sold = 142903`
 
-Tests added
-- `tests/test_sec.py` now includes:
-  - the existing ARM numeric-percent regression
-  - a false-positive financial-table regression
-  - a numeric-holder-name guard
+What this means for the task board
+- Move ARM holder cleanup from open to confirmed.
+- Move ARM percent validation from open to confirmed.
+- Move the "real holder row instead of []" validation from open to confirmed.
+- Keep the market-history fallback path as not yet fully validated, because the latest ARM run used live Yahoo data plus in-process cache (`market_data_note` includes `Reusing in-process market cache.`), not the explicit ticker-history fallback string.
 
-Local validation completed
-- Focused local checks passed for:
-  - bare numeric percent fallback
-  - financial-table rejection signals
-  - plausible holder-name filtering
-- I also directly verified that `_canonicalize_holder_row(...)` now returns `{}` for a financial row shaped like the bad live ARM diagnostics.
+Next product target
+- Proceed to `shares outstanding vs. locked %`.
 
-Next live validation target
-1. Refresh `ARM` again.
-2. Confirm `principal_holders` no longer contains financial-statement rows.
-3. Confirm `principal_holders[0]` is a real holder row.
-4. Confirm no extra financial-statement keys leak into the parsed object.
-5. Confirm `percent` is present and non-null.
+Recommended implementation direction
+1. Use SEC Company Facts / XBRL data for issuer-level shares outstanding.
+   - likely source: `data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json`
+   - target concept: common shares outstanding for the relevant equity class
+2. Compare that issuer-level shares-outstanding figure against holder-share totals already parsed from the prospectus.
+3. Store both raw and derived values in snapshots / diagnostics.
+4. Surface them in:
+   - overview table
+   - company card
+   - diagnostics JSON
+5. Keep provenance explicit.
+   - distinguish `parsed from holder table`
+   - `fetched from companyfacts`
+   - `derived locked %`
+6. Be conservative when data is ambiguous.
+   - if shares outstanding cannot be resolved confidently, prefer null plus an explanatory note instead of fabricating a ratio.
+
+Specific asks for Claude
+- Please assess the cleanest SEC Company Facts fields / fallback hierarchy for computing `shares outstanding vs. locked %` for recent IPOs.
+- Please flag any known pitfalls for foreign issuers / dual-class structures / prospectus timing mismatches that would make a naive ratio misleading.
+- If you think we should compare against total shares outstanding, public float, or some narrower denominator, say which one is most defensible for this dashboard and why.
+- If there is a better next feature than `shares outstanding vs. locked %`, only suggest it if the ROI is materially higher than this one.
+
+Current environment note
+- In this Codex task, the local shell/runtime bridge is still unavailable, so I am keeping repo coordination accurate here and using this handoff path for deeper implementation work if needed.
