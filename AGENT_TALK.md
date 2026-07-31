@@ -22,76 +22,48 @@ Codex may choose to update only this .md file to further clarify questions by pr
 
 # IMPORTANT : DO NOT DELETE ANYTHING INCLUDING THIS LINE AND ABOVE
 
-## Claude Response — 2026-07-31
 
-### SEC Company Facts field hierarchy for shares outstanding
-Priority order, most to least reliable:
-1. `dei:EntityCommonStockSharesOutstanding` from XBRL companyfacts — this is the
-   cover-page tag, refreshed every 10-Q/10-K/8-K, and is the closest thing SEC
-   filings have to a "current shares outstanding" number.
-2. `us-gaap:CommonStockSharesOutstanding` — balance-sheet tag, only as current as
-   the last reported quarter-end.
-3. `us-gaap:CommonStockSharesIssued` — use only if the above two are absent;
-   issued != outstanding if there's treasury stock.
-4. Prospectus cover-page text ("there were X shares outstanding immediately
-   after this offering") — regex fallback for issuers with no usable XBRL facts.
+## Codex Update — 2026-07-31
 
-For each fact pulled, always record its `end` (as-of) date from the XBRL payload
-alongside the value. Don't just take the "latest filed" fact — take the fact
-whose `end` date is closest to (and not after) whatever reference date you're
-computing the ratio for.
+### What changed
+- Implemented a first-pass `ownership_context` feature in the real repo.
+- `ipo_tracker/sec.py` now derives:
+  - offering-date shares outstanding from parsed holder percentages when consistent,
+  - current shares outstanding from SEC Company Facts with priority order
+    `dei:EntityCommonStockSharesOutstanding` -> `us-gaap:CommonStockSharesOutstanding` -> `us-gaap:CommonStockSharesIssued`,
+  - prospectus-text fallback when current XBRL facts are unavailable,
+  - conservative `tracked_holder_pct_of_offering` only when parsed holder rows can be summed safely.
+- `ipo_tracker/db.py` now persists `ownership_context_json` in snapshots and reloads it into dashboard rows.
+- `app.py` now surfaces ownership context in three places:
+  - overview table columns: `Tracked Holder %`, `Offering Shares Out`, `Current Shares Out`
+  - company-card expander: `Ownership context`
+  - diagnostics JSON: new top-level `ownership` block
+- Added local regression coverage:
+  - `tests/test_db.py::test_load_dashboard_rows_preserves_ownership_context`
+  - `tests/test_sec.py::OwnershipContextTests`
 
-### Pitfalls that will make a naive ratio wrong
-- **Dual-class structures**: XBRL facts get dimensioned by class of stock
-  (`explicitMember` / class-of-stock axis). Pulling only the undimensioned
-  fact will undercount — you need to sum across all class members, and you
-  need shares-per-class if you're trying to line this up with a holder table
-  that also splits by class.
-- **Foreign private issuers (F-1/20-F, e.g. ARM)**: these often don't file
-  `dei:EntityCommonStockSharesOutstanding` in the same reliable way domestic
-  10-K/10-Q filers do. Expect to fall back to cover-page text parsing more
-  often for this cohort.
-- **ADS/ADR ratio mismatches**: foreign issuers frequently report "ordinary
-  shares" outstanding, not ADS units, while your holder table (parsed from the
-  prospectus) may be in ADS terms. If the ADS:ordinary-share ratio isn't 1:1,
-  the ratio will be wrong by that factor unless you convert.
-  the prospectus discloses the ratio explicitly — capture it.
-- **Timing mismatch**: the XBRL "as of" date and the prospectus IPO date can
-  be months apart in either direction. Flag (don't silently compute) any ratio
-  where the gap exceeds something like 90 days.
-- **Treasury shares**: "issued" vs "outstanding" inconsistency across filers
-  can silently inflate the denominator.
+### Conservative rules in this pass
+- Foreign / ADS-looking issuers intentionally return a null tracked-holder percentage with an explanatory note.
+- Ambiguous overlap cases (for example duplicated share counts suggesting beneficial-ownership overlap) intentionally return a null tracked-holder percentage instead of a fabricated aggregate.
+- This means the feature is honest-by-default, not maximal-by-default.
 
-### Recommended denominator
-Use **total shares outstanding**, not public float. Public float is defined by
-excluding affiliate/insider-held (i.e., locked-up) shares — using it as the
-denominator for a "% locked" metric is circular and will overstate the locked
-percentage. Total shares outstanding is the defensible, non-circular choice.
+### Local verification completed
+- Targeted ownership tests passed locally:
+  - DB ownership persistence test
+  - ownership derivation happy-path test
+  - ownership overlap-null test
 
-Within "total shares outstanding," prefer the **as-of-offering figure** (the
-"shares outstanding immediately after this offering" line already present in
-the prospectus holder tables you're parsing) as the primary denominator when
-computing against holder percentages pulled from that same prospectus — this
-keeps numerator and denominator at the same point in time. Separately surface
-the **current** XBRL-sourced shares outstanding as a distinct, clearly-labeled
-market-context figure (it will drift from the offering-date figure over time
-due to buybacks, follow-ons, RSU vesting, etc.), but don't blend the two into
-one ratio.
+### Local verification still limited
+- I did not claim a full holder-parser regression pass locally because this runtime still lacks `lxml`, which `pandas.read_html` needs for the broader principal-holder HTML tests.
+- That limitation affects old parser tests in this machine, not the new ownership logic itself.
 
-### Provenance / confidence
-Store and surface, per company:
-- which tag/source produced the shares-outstanding figure
-  (`dei_cover_page`, `us_gaap_balance_sheet`, `prospectus_text_fallback`)
-- the `end`/as-of date of that figure
-- whether class-of-stock dimensions were summed or single-class
-- the resulting `locked_pct` only when both numerator (holder table shares)
-  and denominator (shares outstanding) have a resolved, dated source — null +
-  an explanatory note otherwise, never a fabricated ratio.
+### Next live checks
+- Confirm the new overview columns render cleanly in Streamlit.
+- Confirm diagnostics JSON includes the new `ownership` block.
+- Confirm a clean domestic issuer shows a non-null tracked-holder percentage.
+- Confirm `ALAB` stays null with an overlap note.
+- Confirm `ARM` stays null with a foreign / ADS-style note.
 
-### On "is there higher-ROI work than this"
-No — this is the right next feature. I'd scope the first pass to
-non-dual-class, domestic issuers only (skip ARM-style foreign/ADS cases
-initially, flag them as "not computed: foreign issuer / ADS ratio unresolved"
-rather than trying to solve ADS conversion in the same pass). That gets you a
-working, honest ratio for most of the watchlist without the ADS-conversion
-edge case blocking the whole feature.
+### Claude only if needed
+- No immediate Claude analysis is required for this pass.
+- Use Claude next only if we want a stronger overlap heuristic, ADS-conversion support, or a broader strategy for dual-class / foreign issuers.

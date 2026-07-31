@@ -64,6 +64,10 @@
 - `ipo_tracker/sec.py` now rejects principal-holder candidate tables that contain obvious financial-statement language and also rejects holder rows whose name field is not a plausible textual holder name.
 - `tests/test_sec.py` now covers the ARM-style false-positive financial-table regression and the new numeric-holder-name guard.
 - `ipo_tracker/sec.py` had a later truncation regression on Tuesday, July 28, 2026; the missing bottom portion of `determine_effective_unlock_date(...)` and `enrich_company(...)` has now been restored on `main` so the module can import again.
+- A first-pass `ownership_context` feature is now implemented across `ipo_tracker/sec.py`, `ipo_tracker/db.py`, and `app.py`: refreshes persist offering-date shares outstanding, current shares outstanding, and a conservative tracked-holder percentage when the holder rows can be summed safely.
+- The new ownership metric prefers `dei:EntityCommonStockSharesOutstanding`, then `us-gaap:CommonStockSharesOutstanding`, then `us-gaap:CommonStockSharesIssued`, and finally falls back to prospectus text when SEC Company Facts is unavailable.
+- The tracked-holder percentage intentionally stays null for ambiguous overlap cases and foreign / ADS-style issuers instead of forcing a misleading ratio.
+- `tests/test_db.py` now covers ownership-context snapshot persistence, and `tests/test_sec.py` now covers both the normal ownership derivation path and the conservative-overlap null path.
 
 ## Covered By Tests
 - `tests/test_sec.py` covers lock-up extraction, fallback behavior, long-window early-release percent parsing, greenshoe disambiguation, early-release and earnings-trigger detection, 8-K amendment detection, cover-page IPO date extraction, holder parsing, embedded multi-row holder-header promotion, ARM-style spacer-table percent retention, trading-day offsets, effective unlock date resolution, confidence scoring, suppression of stray numeric holder keys for the ARM-style embedded-header case, and truthful confidence details when filing HTML is unavailable.
@@ -82,7 +86,6 @@
 - Confirm that the new `insider_sales.lookup.status` values are enough in practice to explain remaining edge cases without needing a DB-level dedicated lookup table.
 - Decide later whether the overview-table `0` should gain a tooltip or footnote clarifying that the value means `parsed count`, not `confirmed none exist`.
 - Decide later whether post-unlock insider activity should remain sale-code `S` only or expand to include non-open-market codes such as `F`.
-- Compute shares outstanding versus locked percentage.
 - Improve per-holder lock-up term parsing.
 - Monitor resale registrations such as S-3 and S-8 filings.
 - Add stronger automated IPO validation beyond the current discovery heuristics.
@@ -102,10 +105,15 @@
 - If `market_data_note` still says `Previous snapshot market data available: no.` after the ticker-keyed history fallback change, treat that as a real deployed-history gap rather than the old snapshot-selection bug.
 - If an issuer still returns `principal_holders = []` together with `No filing text available`, inspect whether the notes now include the specific fetch failure reason and no longer overstate filing-text parsing.
 - Ignore Form 144-only evidence when judging the Form 4 feature, because Form 144 is intent-to-sell, not completed Form 4 sale execution.
+- Confirm the overview table now surfaces `Tracked Holder %`, `Offering Shares Out`, and `Current Shares Out` without breaking layout on Streamlit Cloud.
+- In the `Diagnostics` tab, confirm a new top-level `ownership` block exists and includes source labels, as-of dates, and note fields.
+- Check a domestic issuer with clean holder rows and confirm the ownership panel shows a non-null tracked-holder percentage.
+- Check `ALAB` and confirm the tracked-holder percentage stays null with an overlap-style explanatory note rather than a fabricated aggregate.
+- Check `ARM` and confirm the tracked-holder percentage stays null with a foreign / ADS-style note in this first pass.
 
 ## Notes
 - The repo is connected to GitHub live and I can read and update files on `main`.
 - `main` is the branch to keep using for the project.
 - Streamlit Cloud deployment is already working.
-- Technical difficulty on my side: the local shell/runtime bridge is unavailable in this session, so I could not run the app or local test suite directly. That is why I am separating live-confirmed items from code-complete items instead of overstating certainty.
-- Additional current blocker: the GitHub large-file fetch path truncates `ipo_tracker/sec.py` in this thread, so a safe whole-file remote patch to that file is not practical here without a working local file bridge.
+- The local repo bridge is working again in this session, so code and targeted tests can run locally against the real checkout.
+- Current local limitation: the full HTML-table parser stack is still incomplete here because `lxml` is missing, so the ownership-specific tests passed locally but the broader `pandas.read_html` holder-parser tests were not fully re-validated in this runtime.

@@ -15,6 +15,7 @@ from ipo_tracker.sec import (
     _table_contains_excluded_holder_language,
     _table_has_holder_signals,
     add_trading_days,
+    build_ownership_context,
     assess_data_confidence,
     determine_effective_unlock_date,
     extract_ipo_date_from_text,
@@ -562,6 +563,79 @@ class SecParserTests(unittest.TestCase):
         self.assertEqual(label, "Low")
         self.assertIn("No filing URL found", details)
         self.assertIn("Principal holder table not cleanly parsed", details)
+
+
+class OwnershipContextTests(unittest.TestCase):
+    @patch("ipo_tracker.sec.load_companyfacts")
+    def test_build_ownership_context_derives_offering_and_current_shares(self, load_companyfacts_mock) -> None:
+        load_companyfacts_mock.return_value = {
+            "facts": {
+                "dei": {
+                    "EntityCommonStockSharesOutstanding": {
+                        "units": {
+                            "shares": [
+                                {"end": "2024-06-30", "filed": "2024-08-01", "val": 90000000},
+                            ]
+                        }
+                    }
+                }
+            }
+        }
+        html = """
+        <html>
+          <body>
+            <p>There will be 86,900,000 shares of common stock outstanding immediately after this offering.</p>
+          </body>
+        </html>
+        """
+        holders = [
+            {"holder": "Sequoia Capital", "shares": 12_345_678, "percent": 14.2},
+            {"holder": "Founder Holdings LLC", "shares": 8_765_432, "percent": 10.1},
+        ]
+
+        context = build_ownership_context(
+            cik=1234567,
+            company_name="Demo, Inc.",
+            filing_form="424B4",
+            html_text=html,
+            principal_holders=holders,
+            parsed_ipo_date="2024-03-21",
+        )
+
+        self.assertEqual(context["offering_shares_outstanding_source"], "principal_holder_percent_derived")
+        self.assertAlmostEqual(context["tracked_holder_pct_of_offering"], 24.3, places=1)
+        self.assertEqual(context["tracked_holder_shares"], 21_111_110)
+        self.assertEqual(context["current_shares_outstanding"], 90_000_000)
+        self.assertEqual(context["current_shares_outstanding_source"], "dei:EntityCommonStockSharesOutstanding")
+        self.assertEqual(context["current_shares_outstanding_as_of"], "2024-06-30")
+
+    @patch("ipo_tracker.sec.load_companyfacts")
+    def test_build_ownership_context_nulls_tracked_pct_when_overlap_is_ambiguous(self, load_companyfacts_mock) -> None:
+        load_companyfacts_mock.return_value = {"facts": {}}
+        html = """
+        <html>
+          <body>
+            <p>There will be 163,000,000 shares of common stock outstanding immediately after this offering.</p>
+          </body>
+        </html>
+        """
+        holders = [
+            {"holder": "Entities Affiliated with Sutter Hill Ventures", "shares": 22_404_937, "percent": 13.7},
+            {"holder": "Stefan Dyckerhoff", "shares": 22_404_937, "percent": 13.7},
+        ]
+
+        context = build_ownership_context(
+            cik=1736297,
+            company_name="Astera Labs, Inc.",
+            filing_form="424B4",
+            html_text=html,
+            principal_holders=holders,
+            parsed_ipo_date="2024-03-20",
+        )
+
+        self.assertEqual(context["offering_shares_outstanding_source"], "principal_holder_percent_derived")
+        self.assertIsNone(context["tracked_holder_pct_of_offering"])
+        self.assertIn("duplicate holder share counts", context["tracked_holder_pct_note"])
 
 
 if __name__ == "__main__":

@@ -43,6 +43,7 @@ class DatabaseMarketFallbackTests(unittest.TestCase):
         avg_volume_30d,
         market_cap,
         market_data_note: str,
+        ownership_context: dict | None = None,
     ) -> None:
         db.upsert_snapshot(
             self.company_id,
@@ -55,6 +56,7 @@ class DatabaseMarketFallbackTests(unittest.TestCase):
             principal_holders=[{"holder": "SoftBank Group Corp.", "shares": 1025233999}],
             lockup_source="Lock-Up Restrictions section: Regex match: for a period of 180 days",
             lockup_conditions={},
+            ownership_context=ownership_context or {},
             insider_sales=[],
             ipo_price=ipo_price,
             current_price=current_price,
@@ -134,6 +136,27 @@ class DatabaseMarketFallbackTests(unittest.TestCase):
         self.assertEqual(row["ipo_price"], 63.59)
         self.assertEqual(row["current_price"], 266.33)
         self.assertIn("Previous snapshot market data available: yes.", row["market_data_note"])
+
+    def test_load_dashboard_rows_preserves_ownership_context(self) -> None:
+        self._write_snapshot(
+            ipo_price=63.59,
+            current_price=242.63,
+            price_change_pct=281.55,
+            avg_volume_30d=8_123_513,
+            market_cap=259_147_956_224,
+            market_data_note="Live data from Yahoo Finance via yfinance",
+            ownership_context={
+                "offering_shares_outstanding": 86_863_925,
+                "current_shares_outstanding": 90_000_000,
+                "tracked_holder_pct_of_offering": 24.3,
+            },
+        )
+
+        row = db.load_dashboard_rows()[0]
+
+        self.assertEqual(row["ownership_context"]["offering_shares_outstanding"], 86_863_925)
+        self.assertEqual(row["ownership_context"]["current_shares_outstanding"], 90_000_000)
+        self.assertEqual(row["ownership_context"]["tracked_holder_pct_of_offering"], 24.3)
 
 
 if __name__ == "__main__":

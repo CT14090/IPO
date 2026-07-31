@@ -99,6 +99,11 @@ def _insider_sales_summary(row: dict) -> dict[str, Any]:
     return summarize_insider_sales(_insider_sales_records(row))
 
 
+def _ownership_context(row: dict) -> dict[str, Any]:
+    context = row.get("ownership_context", {})
+    return context if isinstance(context, dict) else {}
+
+
 def _current_unlock_date(row: dict) -> str | None:
     return row.get("effective_unlock_date") or row.get("unlock_date")
 
@@ -150,6 +155,9 @@ def _table_rows(rows: list[dict], minimum_confidence: int) -> list[dict[str, Any
             "% From IPO": _format_percent(_market_price_change_pct(row)),
             "30D Avg Volume": _format_integer(row.get("avg_volume_30d")),
             "Market Cap": _format_integer(row.get("market_cap")),
+            "Tracked Holder %": _format_plain_percent(_ownership_context(row).get("tracked_holder_pct_of_offering")),
+            "Offering Shares Out": _format_integer(_ownership_context(row).get("offering_shares_outstanding")),
+            "Current Shares Out": _format_integer(_ownership_context(row).get("current_shares_outstanding")),
             "Post-Unlock Form 4 Sales": _insider_sales_summary(row)["transaction_count"],
             "Source": row["lockup_source"],
         }
@@ -173,6 +181,7 @@ def _persist_snapshot(company_id: int, enriched: dict) -> None:
         "principal_holders": enriched["principal_holders"],
         "lockup_source": enriched["lockup_source"],
         "lockup_conditions": enriched.get("lockup_conditions"),
+        "ownership_context": enriched.get("ownership_context"),
         "insider_sales": enriched.get("insider_sales", []),
         "ipo_price": enriched.get("ipo_price"),
         "current_price": enriched.get("current_price"),
@@ -383,6 +392,15 @@ def _format_percent(value) -> str:
         return "—"
 
 
+def _format_plain_percent(value) -> str:
+    if value in (None, ""):
+        return "—"
+    try:
+        return f"{float(value):.2f}%"
+    except (TypeError, ValueError):
+        return "—"
+
+
 def _diagnostics_label(row: dict, minimum_confidence: int) -> str:
     return f"{row.get('ticker', '—')} | {row.get('company_name', 'Unknown')} | CIK {row.get('cik', '—')} | {_review_state(row, minimum_confidence)}"
 
@@ -433,6 +451,7 @@ def _diagnostics_payload(
             "market_cap": row.get("market_cap"),
             "market_data_note": row.get("market_data_note", ""),
         },
+        "ownership": _ownership_context(row),
         "insider_sales": {
             "lookup": _insider_sales_lookup(row),
             "summary": _insider_sales_summary(row),
@@ -505,6 +524,48 @@ def render_market_context(row: dict) -> None:
         col5.metric("Market cap", _format_integer(row.get("market_cap")))
         if row.get("market_data_note"):
             st.caption(row["market_data_note"])
+
+
+def render_ownership_context(row: dict) -> None:
+    context = _ownership_context(row)
+    has_values = any(value not in (None, "", [], {}) for value in context.values())
+    if not has_values:
+        return
+
+    with st.expander("Ownership context", expanded=False):
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Tracked holder %", _format_plain_percent(context.get("tracked_holder_pct_of_offering")))
+        col2.metric("Tracked holder shares", _format_integer(context.get("tracked_holder_shares")))
+        col3.metric("Offering shares out", _format_integer(context.get("offering_shares_outstanding")))
+        col4.metric("Current shares out", _format_integer(context.get("current_shares_outstanding")))
+
+        if context.get("offering_shares_outstanding_source") or context.get("offering_shares_outstanding_as_of"):
+            st.caption(
+                "Offering denominator: "
+                f"{context.get('offering_shares_outstanding_source') or 'unknown source'}"
+                + (
+                    f" | as of {context.get('offering_shares_outstanding_as_of')}"
+                    if context.get("offering_shares_outstanding_as_of")
+                    else ""
+                )
+            )
+        if context.get("offering_shares_outstanding_note"):
+            st.caption(context["offering_shares_outstanding_note"])
+
+        if context.get("current_shares_outstanding_source") or context.get("current_shares_outstanding_as_of"):
+            st.caption(
+                "Current shares source: "
+                f"{context.get('current_shares_outstanding_source') or 'unknown source'}"
+                + (
+                    f" | as of {context.get('current_shares_outstanding_as_of')}"
+                    if context.get("current_shares_outstanding_as_of")
+                    else ""
+                )
+            )
+        if context.get("current_shares_outstanding_note"):
+            st.caption(context["current_shares_outstanding_note"])
+        if context.get("tracked_holder_pct_note"):
+            st.caption(context["tracked_holder_pct_note"])
 
 
 def render_insider_sales(row: dict) -> None:
@@ -590,6 +651,7 @@ def render_company_card(row: dict, minimum_confidence: int) -> None:
                 st.caption(confidence_details)
             render_lockup_conditions(row.get("lockup_conditions", {}))
             render_market_context(row)
+            render_ownership_context(row)
             render_insider_sales(row)
         with right:
             if row["source_url"]:

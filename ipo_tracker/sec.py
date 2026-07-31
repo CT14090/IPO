@@ -8,6 +8,7 @@ from datetime import date, datetime, timedelta
 from functools import lru_cache
 from html import unescape
 from io import StringIO
+from statistics import median
 from typing import Any
 
 import pandas as pd
@@ -21,6 +22,7 @@ SEC_BASE_HEADERS = {
     "Accept": "application/json,text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
 SUBMISSIONS_BASE_URL = "https://data.sec.gov/submissions/"
+COMPANYFACTS_BASE_URL = "https://data.sec.gov/api/xbrl/companyfacts/"
 IPO_FORMS = {"424B4", "424B1", "424B3", "S-1", "S-1/A", "F-1", "F-1/A"}
 EARNINGS_RELEASE_FORMS = {"8-K", "8-K/A", "10-Q", "10-Q/A", "10-K", "10-K/A"}
 SEC_REQUEST_MAX_ATTEMPTS = 3
@@ -97,6 +99,29 @@ HOLDER_PLACEHOLDERS = {
     "selling stockholder", "selling stockholders", "stockholder", "stockholders",
     "shareholder", "shareholders", "total",
 }
+
+SHARES_OUTSTANDING_FACT_PRIORITY = (
+    ("dei", "EntityCommonStockSharesOutstanding"),
+    ("us-gaap", "CommonStockSharesOutstanding"),
+    ("us-gaap", "CommonStockSharesIssued"),
+)
+
+_PROSPECTUS_OUTSTANDING_PATTERNS = (
+    re.compile(
+        r"([0-9][0-9,]{3,})\s+(?:ordinary shares|shares of common stock|shares of our common stock|class a common stock|common shares)[^.]{0,160}?outstanding immediately after this offering",
+        re.I,
+    ),
+    re.compile(
+        r"([0-9][0-9,]{3,})\s+(?:ordinary shares|shares of common stock|shares of our common stock|class a common stock|common shares)[^.]{0,160}?outstanding after this offering",
+        re.I,
+    ),
+    re.compile(
+        r"there (?:will|would) be\s+([0-9][0-9,]{3,})[^.]{0,160}?outstanding immediately after this offering",
+        re.I,
+    ),
+)
+_ADS_OR_FOREIGN_SIGNAL_RE = re.compile(r"american depositary shares|\bads\b|\badr\b|\bplc\b", re.I)
+_PROXY_OVERLAP_SIGNAL_RE = re.compile(r"subject to voting proxy|voting proxy", re.I)
 
 # ── Fix 3 ──────────────────────────────────────────────────────────────────────
 _LOCKUP_AMENDMENT_RE = re.compile(
@@ -238,6 +263,10 @@ def submissions_url(cik: int | str) -> str:
     return f"https://data.sec.gov/submissions/CIK{normalize_cik(cik)}.json"
 
 
+def companyfacts_url(cik: int | str) -> str:
+    return f"{COMPANYFACTS_BASE_URL}CIK{normalize_cik(cik)}.json"
+
+
 def filing_document_url(cik: int | str, accession_number: str, primary_document: str) -> str:
     cik_no_leading_zero = str(int(normalize_cik(cik)))
     accession_no_dashes = accession_number.replace("-", "")
@@ -270,6 +299,15 @@ def _fetch_company_submissions_cached(normalized_cik: str) -> dict[str, Any]:
 @lru_cache(maxsize=512)
 def _fetch_submission_fragment_cached(name: str) -> dict[str, Any]:
     return fetch_json(_submission_fragment_url(name))
+
+
+@lru_cache(maxsize=256)
+def _fetch_companyfacts_cached(normalized_cik: str) -> dict[str, Any]:
+    return fetch_json(companyfacts_url(normalized_cik))
+
+
+def load_companyfacts(cik: int | str) -> dict[str, Any]:
+    return _fetch_companyfacts_cached(normalize_cik(cik))
 
 
 def load_company_submissions(cik: int | str) -> dict[str, Any]:
@@ -1092,6 +1130,269 @@ def extract_principal_holders(html_text: str) -> list[dict[str, Any]]:
     return best_records[:10]
 
 
+def _coerce_share_count(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        numeric = float(str(value).replace(",", ""))
+    except (TypeError, ValueError):
+        return None
+    if numeric <= 0:
+        return None
+    return int(round(numeric))
+
+
+def _coerce_percent_value(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        numeric = float(str(value).replace("%", "").replace(",", "").strip())
+    except (TypeError, ValueError):
+        return None
+    if numeric < 0 or numeric > 100:
+        return None
+    return numeric
+
+
+def _extract_prospectus_shares_outstanding(html_text: str) -> tuple[int | None, str | None]:
+    if not html_text:
+        return None, None
+    text = _strip_html(html_text)
+    for pattern in _PROSPECTUS_OUTSTANDING_PATTERNS:
+        match = pattern.search(text)
+        if match is None:
+            continue
+        try:
+            shares = int(match.group(1).replace(",", ""))
+        except ValueError:
+            continue
+        return shares, f"Prospectus text fallback: {match.group(0)[:160]}"
+    return None, None
+
+
+def _derive_offering_shares_outstanding(
+    principal_holders: list[dict[str, Any]],
+    html_text: str,
+) -> tuple[int | None, str | None, str]:
+    derived_values: list[float] = []
+    for holder in principal_holders:
+        shares = _coerce_share_count(holder.get("shares"))
+        percent = _coerce_percent_value(holder.get("percent"))
+        if shares is None or percent is None or percent == 0:
+            continue
+        derived = shares / (percent / 100.0)
+        if derived < shares:
+            continue
+        derived_values.append(derived)
+
+    if derived_values:
+        derived_median = float(median(derived_values))
+        max_deviation = max(abs(value - derived_median) / derived_median for value in derived_values)
+        if max_deviation <= 0.05:
+            return (
+                int(round(derived_median)),
+                "principal_holder_percent_derived",
+                f"Derived offering-date shares outstanding from {len(derived_values)} holder row(s); max deviation {max_deviation * 100:.1f}%.",
+            )
+        return (
+            None,
+            None,
+            f"Holder rows imply inconsistent offering-date share counts (max deviation {max_deviation * 100:.1f}%).",
+        )
+
+    fallback_value, fallback_note = _extract_prospectus_shares_outstanding(html_text)
+    if fallback_value is not None:
+        return fallback_value, "prospectus_text_fallback", fallback_note or "Prospectus text fallback"
+    return None, None, "No reliable offering-date shares outstanding figure was derived."
+
+
+def _select_companyfacts_share_fact(
+    units: dict[str, Any],
+    *,
+    reference_date: date,
+) -> tuple[int | None, str | None, bool]:
+    undimensioned: list[tuple[date, date, int]] = []
+    ignored_dimensions = False
+
+    for entries in units.values():
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            end_date = _parse_iso_date(entry.get("end"))
+            share_count = _coerce_share_count(entry.get("val"))
+            if end_date is None or share_count is None:
+                continue
+            if entry.get("segment"):
+                ignored_dimensions = True
+                continue
+            filed_date = _parse_iso_date(entry.get("filed")) or end_date
+            undimensioned.append((end_date, filed_date, share_count))
+
+    if not undimensioned:
+        return None, None, ignored_dimensions
+
+    eligible = [candidate for candidate in undimensioned if candidate[0] <= reference_date]
+    pool = eligible or undimensioned
+    end_date, filed_date, share_count = max(pool, key=lambda item: (item[0], item[1], item[2]))
+    return share_count, end_date.isoformat(), ignored_dimensions
+
+
+def _load_current_shares_outstanding(
+    cik: int | str,
+    *,
+    html_text: str,
+    parsed_ipo_date: str,
+    reference_date: date,
+) -> dict[str, Any]:
+    facts: dict[str, Any] | None = None
+    failure_note: str | None = None
+    try:
+        facts = load_companyfacts(cik).get("facts", {})
+    except requests.RequestException as exc:
+        failure_note = f"Company Facts fetch failed: {_describe_request_exception(exc)}"
+
+    dimension_note: str | None = None
+    if isinstance(facts, dict):
+        for taxonomy, concept in SHARES_OUTSTANDING_FACT_PRIORITY:
+            concept_data = facts.get(taxonomy, {}).get(concept, {})
+            if not isinstance(concept_data, dict):
+                continue
+            share_count, as_of, ignored_dimensions = _select_companyfacts_share_fact(
+                concept_data.get("units", {}),
+                reference_date=reference_date,
+            )
+            if share_count is not None:
+                note = "Live current shares outstanding from SEC Company Facts."
+                if ignored_dimensions:
+                    note += " Additional class-level dimensions were ignored in this first-pass metric."
+                return {
+                    "current_shares_outstanding": share_count,
+                    "current_shares_outstanding_as_of": as_of,
+                    "current_shares_outstanding_source": f"{taxonomy}:{concept}",
+                    "current_shares_outstanding_note": note,
+                    "current_shares_outstanding_uses_dimensions": False,
+                }
+            if ignored_dimensions and dimension_note is None:
+                dimension_note = "Only dimensioned class-level SEC share facts were available, so current shares outstanding was not computed from XBRL."
+
+    fallback_value, fallback_note = _extract_prospectus_shares_outstanding(html_text)
+    if fallback_value is not None:
+        note = "Prospectus-era fallback used because no current undimensioned SEC Company Facts value was available."
+        if fallback_note:
+            note = f"{note} {fallback_note}"
+        if failure_note:
+            note = f"{note} {failure_note}"
+        elif dimension_note:
+            note = f"{note} {dimension_note}"
+        return {
+            "current_shares_outstanding": fallback_value,
+            "current_shares_outstanding_as_of": parsed_ipo_date,
+            "current_shares_outstanding_source": "prospectus_text_fallback",
+            "current_shares_outstanding_note": note,
+            "current_shares_outstanding_uses_dimensions": False,
+        }
+
+    note = failure_note or dimension_note or "No current shares outstanding fact was resolved."
+    return {
+        "current_shares_outstanding": None,
+        "current_shares_outstanding_as_of": None,
+        "current_shares_outstanding_source": None,
+        "current_shares_outstanding_note": note,
+        "current_shares_outstanding_uses_dimensions": False,
+    }
+
+
+def _tracked_holder_metrics(
+    principal_holders: list[dict[str, Any]],
+    *,
+    offering_shares_outstanding: int | None,
+    filing_form: str | None,
+    company_name: str,
+    html_text: str,
+) -> tuple[int | None, float | None, str]:
+    if offering_shares_outstanding is None:
+        return None, None, "Tracked holder percentage was not computed because the offering-date denominator is unresolved."
+
+    issuer_name = company_name or ""
+    if (filing_form or "").startswith("F-") or _ADS_OR_FOREIGN_SIGNAL_RE.search(f"{issuer_name} {_strip_html(html_text)[:500]}"):
+        return None, None, "Tracked holder percentage was not computed in this first pass because the issuer looks foreign or ADS-based."
+
+    rows: list[tuple[str, int]] = []
+    seen_shares: set[int] = set()
+    duplicate_shares: set[int] = set()
+    percent_total = 0.0
+    for holder in principal_holders:
+        holder_name = str(holder.get("holder") or "").strip()
+        shares = _coerce_share_count(holder.get("shares"))
+        percent = _coerce_percent_value(holder.get("percent"))
+        if percent is not None:
+            percent_total += percent
+        if not holder_name or shares is None:
+            continue
+        if _PROXY_OVERLAP_SIGNAL_RE.search(holder_name):
+            return None, None, "Tracked holder percentage was not computed because the parsed holder table includes proxy/overlap rows that cannot be safely summed."
+        if shares in seen_shares:
+            duplicate_shares.add(shares)
+        seen_shares.add(shares)
+        rows.append((holder_name, shares))
+
+    if not rows:
+        return None, None, "Tracked holder percentage was not computed because no numeric holder rows were available."
+    if duplicate_shares:
+        return None, None, "Tracked holder percentage was not computed because duplicate holder share counts suggest overlapping beneficial ownership rows."
+    if percent_total > 100.5:
+        return None, None, "Tracked holder percentage was not computed because parsed holder percentages exceed 100%, which suggests overlap or mixed share classes."
+
+    tracked_shares = sum(shares for _, shares in rows)
+    if tracked_shares > offering_shares_outstanding:
+        return None, None, "Tracked holder percentage was not computed because summed parsed holder shares exceed the offering-date shares outstanding denominator."
+
+    tracked_pct = round((tracked_shares / offering_shares_outstanding) * 100, 2)
+    return tracked_shares, tracked_pct, f"Tracked holder percentage sums {len(rows)} parsed holder row(s) against the offering-date denominator."
+
+
+def build_ownership_context(
+    *,
+    cik: int | str,
+    company_name: str,
+    filing_form: str | None,
+    html_text: str,
+    principal_holders: list[dict[str, Any]],
+    parsed_ipo_date: str,
+) -> dict[str, Any]:
+    offering_shares_outstanding, offering_source, offering_note = _derive_offering_shares_outstanding(
+        principal_holders,
+        html_text,
+    )
+    current_context = _load_current_shares_outstanding(
+        cik,
+        html_text=html_text,
+        parsed_ipo_date=parsed_ipo_date,
+        reference_date=date.today(),
+    )
+    tracked_holder_shares, tracked_holder_pct, tracked_holder_note = _tracked_holder_metrics(
+        principal_holders,
+        offering_shares_outstanding=offering_shares_outstanding,
+        filing_form=filing_form,
+        company_name=company_name,
+        html_text=html_text,
+    )
+    return {
+        "offering_shares_outstanding": offering_shares_outstanding,
+        "offering_shares_outstanding_as_of": parsed_ipo_date if offering_shares_outstanding is not None else None,
+        "offering_shares_outstanding_source": offering_source,
+        "offering_shares_outstanding_note": offering_note,
+        "current_shares_outstanding": current_context.get("current_shares_outstanding"),
+        "current_shares_outstanding_as_of": current_context.get("current_shares_outstanding_as_of"),
+        "current_shares_outstanding_source": current_context.get("current_shares_outstanding_source"),
+        "current_shares_outstanding_note": current_context.get("current_shares_outstanding_note"),
+        "current_shares_outstanding_uses_dimensions": current_context.get("current_shares_outstanding_uses_dimensions", False),
+        "tracked_holder_shares": tracked_holder_shares,
+        "tracked_holder_pct_of_offering": tracked_holder_pct,
+        "tracked_holder_pct_note": tracked_holder_note,
+    }
+
+
 def _confidence_label(score: int) -> str:
     if score >= 80:
         return "High"
@@ -1280,6 +1581,14 @@ def enrich_company(company: dict[str, Any]) -> dict[str, Any]:
     if not parsed_ipo_date:
         parsed_ipo_date = seeded_ipo_date
     parsed_ipo_dt = date.fromisoformat(parsed_ipo_date)
+    ownership_context = build_ownership_context(
+        cik=cik,
+        company_name=company.get("company_name", ""),
+        filing_form=filing_form,
+        html_text=html_text,
+        principal_holders=principal_holders,
+        parsed_ipo_date=parsed_ipo_date,
+    )
 
     amendment_date, amendment_url, amendment_excerpt = (None, None, None)
     try:
@@ -1364,6 +1673,7 @@ def enrich_company(company: dict[str, Any]) -> dict[str, Any]:
         "effective_unlock_date": effective_unlock_dt.isoformat(),
         "principal_holders": principal_holders,
         "lockup_source": lockup_conditions.lockup_source,
+        "ownership_context": ownership_context,
         "lockup_conditions": {
             "lockup_days": lockup_conditions.lockup_days,
             "lockup_source": lockup_conditions.lockup_source,
