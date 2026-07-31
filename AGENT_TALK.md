@@ -22,54 +22,113 @@ Codex may choose to update only this .md file to further clarify questions by pr
 
 # IMPORTANT : DO NOT DELETE ANYTHING INCLUDING THIS LINE AND ABOVE
 
+## Codex Handoff — 2026-07-31
 
-## Codex Update — 2026-07-31
+Current blocker in this thread is infrastructure only: no local terminal/runtime is attached here, so no shell/file edits are possible from this task. Please continue coding in the local-enabled Codex task.
 
-### What changed
-- Implemented a first-pass `ownership_context` feature in the real repo.
-- `ipo_tracker/sec.py` now derives:
-  - offering-date shares outstanding from parsed holder percentages when consistent,
-  - current shares outstanding from SEC Company Facts with priority order
-    `dei:EntityCommonStockSharesOutstanding` -> `us-gaap:CommonStockSharesOutstanding` -> `us-gaap:CommonStockSharesIssued`,
-  - prospectus-text fallback when current XBRL facts are unavailable,
-  - conservative `tracked_holder_pct_of_offering` only when parsed holder rows can be summed safely.
-- `ipo_tracker/db.py` now persists `ownership_context_json` in snapshots and reloads it into dashboard rows.
-- `app.py` now surfaces ownership context in three places:
-  - overview table columns: `Tracked Holder %`, `Offering Shares Out`, `Current Shares Out`
-  - company-card expander: `Ownership context`
-  - diagnostics JSON: new top-level `ownership` block
-- Added local regression coverage:
-  - `tests/test_db.py::test_load_dashboard_rows_preserves_ownership_context`
-  - `tests/test_sec.py::OwnershipContextTests`
+Priority order from user:
+1. improve ARM offering-date denominator extraction
+2. improve RDDT mixed/dual-class holder-table handling
+3. only after that, revisit whether we can compute more non-null tracked-holder percentages safely
 
-### Conservative rules in this pass
-- Foreign / ADS-looking issuers intentionally return a null tracked-holder percentage with an explanatory note.
-- Ambiguous overlap cases (for example duplicated share counts suggesting beneficial-ownership overlap) intentionally return a null tracked-holder percentage instead of a fabricated aggregate.
-- This means the feature is honest-by-default, not maximal-by-default.
+### Why ARM is first
 
-### Local verification completed
-- Targeted ownership tests passed locally:
-  - DB ownership persistence test
-  - ownership derivation happy-path test
-  - ownership overlap-null test
+Latest ARM diagnostics now show:
 
-### Local verification still limited
-- I did not claim a full holder-parser regression pass locally because this runtime still lacks `lxml`, which `pandas.read_html` needs for the broader principal-holder HTML tests.
-- That limitation affects old parser tests in this machine, not the new ownership logic itself.
+- `principal_holders` contains a single plausible row:
+  - `holder = "SoftBank Group Corp."`
+  - `shares = 1025233999`
+  - `percent = 100`
+- `notes` says `Parsed 1 principal holder rows`
+- `offering_shares_outstanding` was previously null, then the parser began surfacing a single holder row, but this still needs a reliable ownership-context denominator path.
+- Current desired outcome is not “make more fields non-null at any cost”; it is “derive ARM’s offering-date denominator safely enough that ownership context is trustworthy.”
 
-### Next live checks
-- Confirm the new overview columns render cleanly in Streamlit.
-- Confirm diagnostics JSON includes the new `ownership` block.
-- Confirm a clean domestic issuer shows a non-null tracked-holder percentage.
-- Confirm `ALAB` stays null with an overlap note.
-- Confirm `ARM` stays null with a foreign / ADS-style note.
+There was an earlier bad intermediate parse where ARM holder rows were polluted by unrelated financial-statement columns, e.g. values like:
+- `Fiscal Quarter Ended June 30, 2023 AdditionalPaid-in Capital`
+- `holder = "4051"`
+That means the parser has already shown it can latch onto the wrong table if heuristics are too loose.
 
-### Claude only if needed
-- No immediate Claude analysis is required for this pass.
-- Use Claude next only if we want a stronger overlap heuristic, ADS-conversion support, or a broader strategy for dual-class / foreign issuers.
+### ARM hypothesis / likely fix area
 
-## Codex Addendum — 2026-07-31 Discovery crash fix
-- Fixed a production crash in the Discovery tab: `fetch_company_index()` now catches HTTP / JSON failures and returns `{}` instead of raising.
-- Added regression coverage for the HTTP-error path in `tests/test_discovery.py`.
-- Local verification: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_discovery` passed.
+Please inspect the ownership path in `ipo_tracker/sec.py`, especially:
+- `extract_principal_holders(...)`
+- `_canonicalize_holder_row(...)`
+- `_extract_prospectus_shares_outstanding(...)`
+- `_derive_offering_shares_outstanding(...)`
+- `build_ownership_context(...)`
 
+Working hypothesis:
+- ARM’s 424B4 has enough information to derive a denominator, but our current extraction path is either:
+  1. not finding the right “shares outstanding immediately after / after this offering” text, or
+  2. not using the parsed single controlling-holder row correctly/safely, or
+  3. still selecting the wrong nearby table/text block in some runs.
+
+Please prefer a conservative fix:
+- If prospectus text explicitly provides post-offering / immediately-after-offering shares outstanding, use that.
+- If falling back to holder-row derivation, only do it when table semantics are unambiguous.
+- Do not loosen logic in a way that would reintroduce the bad financial-table capture.
+
+### RDDT issue after ARM
+
+Latest RDDT diagnostics show mixed / dual-class contamination in holder rows, e.g. rows like:
+- `holder = "Class A", shares = "Class B", percent = "Class A"`
+- `holder = "Shares", shares = "%", percent = "Shares"`
+
+And earlier ownership notes said:
+- `Holder rows imply inconsistent offering-date share counts (max deviation 99.8%).`
+
+This strongly suggests the parser is not normalizing a multi-row / multi-class holder table correctly before denominator derivation.
+
+Desired RDDT fix:
+- Improve mixed/dual-class holder-table handling so header rows and class-label rows are dropped cleanly.
+- Keep class-specific columns from being mistaken for actual holder records.
+- Only derive offering-date denominator when post-cleaning holder rows agree tightly enough.
+- If still ambiguous, keep null rather than forcing a denominator.
+
+### Important safety rule for phase 3
+
+After ARM and RDDT are improved, only then revisit whether more non-null `tracked_holder_pct_of_offering` values are safe.
+
+Please keep current conservative behavior for:
+- overlapping beneficial ownership rows
+- duplicate share counts suggesting overlap
+- proxy / voting-control style rows
+- foreign / ADS ambiguity unless denominator and holder interpretation are actually clear
+
+ALAB’s current null tracked-holder percentage due to overlapping/duplicate rows is acceptable and should not be “fixed” by loosening safeguards unless a clearly correct de-overlap method exists.
+
+### Suggested implementation plan
+
+1. Re-read current ownership helpers and existing ownership regression tests.
+2. Add/adjust targeted regression coverage for ARM denominator extraction first.
+3. Implement ARM fix conservatively.
+4. Add/adjust targeted regression coverage for RDDT mixed/dual-class table cleaning.
+5. Implement RDDT fix conservatively.
+6. Re-run targeted ownership tests.
+7. Only then evaluate whether any additional tracked-holder percentages can be computed safely.
+8. Update `TASK_BOARD.md` and replace this note in `AGENT_TALK.md` with what changed and what remains.
+
+### Useful user-provided diagnostic facts
+
+ARM current state:
+- company: Arm Holdings plc
+- ticker: ARM
+- cik: 1973239
+- filing form: 424B4
+- filing date: 2023-09-14
+- source URL: `https://www.sec.gov/Archives/edgar/data/1973239/000119312523235320/d550931d424b4.htm`
+- lockup source: `Lock-Up Restrictions section: Regex match: for a period of 180 days`
+- principal holders currently:
+  - SoftBank Group Corp. / 1,025,233,999 shares / 100%
+- current shares outstanding from company facts is already working
+- the task is specifically about improving offering-date denominator extraction for ownership context
+
+RDDT current state:
+- company: Reddit, Inc.
+- ticker: RDDT
+- mixed header/class rows are still the key table-normalization issue
+- ownership denominator previously failed due to inconsistent row-implied totals
+
+### Infrastructure note
+
+This handoff exists because the current Codex thread lost local runtime attachment. The issue is not with repo contents. Please continue in the local-enabled task.
