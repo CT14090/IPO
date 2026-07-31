@@ -20,7 +20,8 @@
 - On Tuesday, July 28, 2026, `ARM` initially exposed a live SEC `429` feed failure, and the later retry-plus-pacing pass successfully cleared that path: `insider_sales.lookup.status = sales_parsed`, `feed_entries = 29`, `candidate_filings = 28`, `xml_documents = 28`, and `transactions_parsed = 39`.
 - The ARM follow-up diagnostics also confirm that the lock-up parser improved from the earlier fallback state: `lockup_source` now resolves to `Lock-Up Restrictions section: Regex match: for a period of 180 days` instead of `No filing text available`.
 - The restored `sec.py` tail fixed the import-time deploy regression: the app is loading again, which confirms `ipo_tracker.sec` imports successfully after the truncation repair.
-- ARM principal-holder parsing is now live-confirmed to return a real holder row instead of `[]`: the diagnostics show `holder = SoftBank Group Corp.` with `shares = 1,025,233,999`.
+- ARM principal-holder parsing is now fully live-confirmed: the diagnostics show a canonical row with `holder = SoftBank Group Corp.`, `shares = 1,025,233,999`, and `percent = 100`.
+- The latest ARM diagnostics also confirm that the earlier false positives are gone: no empty `principal_holders`, no stray financial-statement keys, and no bogus numeric holder names.
 - On Wednesday, July 29, 2026, the user confirmed that the first SEC refresh was materially slower than the second again, so the repeat-refresh speed gap is restored in production.
 - The latest ARM diagnostics also confirm the in-process market cache is active in production because `market_data_note` now includes `Reusing in-process market cache.` on the faster second run.
 
@@ -72,12 +73,8 @@
 - `tests/test_db.py` covers ticker-keyed market history reuse and rebuilding market history from older snapshots.
 
 ## Still Open
-- ARM principal-holder parsing is still not live-confirmed after the stricter table/row filter patch: the code is in `main`, but the latest production refresh has not yet been re-run from this session.
 - Live-validate whether ARM now reports `Previous snapshot market data available: yes.` after the new ticker-keyed `company_market_history` fallback.
 - If the diagnostics still show `Previous snapshot market data available: no.` after the ticker-keyed history fallback change, debug why no prior non-null ARM market values exist in the deployed local DB.
-- Live-validate the ARM holder cleanup by confirming `principal_holders[0]` now contains only canonical keys such as `holder`, `shares`, and `percent`, with no stray numeric-string keys.
-- Live-validate whether ARM now shows a non-null `percent` in `principal_holders[0]` after the numeric-percent fallback plus financial-table rejection fix.
-- Decide later whether we still want to switch ARM-style percent semantics from the current pre-offering default (`100%`) to the post-offering figure (`90.6%`).
 - Live-validate the new SEC filing-fetch diagnostics by checking whether an ARM-style miss now says `Prospectus fetch failed during refresh: HTTP ...` instead of falsely claiming the lock-up and IPO date were parsed from filing text.
 - Live-validate the new market fallback diagnostics by checking whether `market_data_note` explicitly says `Previous snapshot market data available: yes.` or `Previous snapshot market data available: no.` during a Yahoo rate-limit refresh.
 - Decide whether Yahoo rate-limit resilience needs an additional cache or retry/backoff layer beyond snapshot preservation plus in-process reuse.
@@ -85,8 +82,8 @@
 - Confirm that the new `insider_sales.lookup.status` values are enough in practice to explain remaining edge cases without needing a DB-level dedicated lookup table.
 - Decide later whether the overview-table `0` should gain a tooltip or footnote clarifying that the value means `parsed count`, not `confirmed none exist`.
 - Decide later whether post-unlock insider activity should remain sale-code `S` only or expand to include non-open-market codes such as `F`.
-- Improve per-holder lock-up term parsing.
 - Compute shares outstanding versus locked percentage.
+- Improve per-holder lock-up term parsing.
 - Monitor resale registrations such as S-3 and S-8 filings.
 - Add stronger automated IPO validation beyond the current discovery heuristics.
 - Add more explicit provenance summaries for parsed, inferred, and unknown fields.
@@ -100,9 +97,6 @@
 - Confirm the `Diagnostics` tab includes `calendar_unlock_date`, `effective_unlock_date`, and the `insider_sales` section with `lookup`, `summary`, and `transactions`.
 - Confirm `RDDT` still shows `effective_unlock_date = 2024-08-09` and live parsed Form 4 sales after the incremental-refresh change.
 - Confirm the app starts cleanly again after the restored `sec.py` tail.
-- Refresh `ARM` and inspect whether `principal_holders` now contains real holder rows instead of an empty list.
-- For `ARM`, inspect whether `principal_holders[0]` now has only canonical keys and no stray numeric-string placeholders.
-- For `ARM`, inspect whether `principal_holders[0].percent` is now present and non-null after the numeric-percent fallback plus financial-table rejection fix.
 - Reproduce a Yahoo Finance rate-limit scenario and inspect `market_data_note`.
 - Confirm whether `market_data_note` now backfills to `Previous snapshot market data available: yes.` after the new ticker-keyed market-history fallback.
 - If `market_data_note` still says `Previous snapshot market data available: no.` after the ticker-keyed history fallback change, treat that as a real deployed-history gap rather than the old snapshot-selection bug.
