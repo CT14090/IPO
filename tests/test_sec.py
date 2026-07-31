@@ -9,14 +9,16 @@ import pandas as pd
 from ipo_tracker.config import DEFAULT_LOCKUP_DAYS
 from ipo_tracker.market import calculate_price_change_pct
 from ipo_tracker.sec import (
+    _extract_prospectus_shares_outstanding,
     LockupConditions,
     _first_percent_candidate,
     _is_plausible_holder_name,
+    _promote_embedded_header_rows,
     _table_contains_excluded_holder_language,
     _table_has_holder_signals,
     add_trading_days,
-    build_ownership_context,
     assess_data_confidence,
+    build_ownership_context,
     determine_effective_unlock_date,
     extract_ipo_date_from_text,
     extract_lockup_conditions,
@@ -581,13 +583,7 @@ class OwnershipContextTests(unittest.TestCase):
                 }
             }
         }
-        html = """
-        <html>
-          <body>
-            <p>There will be 86,900,000 shares of common stock outstanding immediately after this offering.</p>
-          </body>
-        </html>
-        """
+        html = "<html><body><p>No explicit prospectus denominator here.</p></body></html>"
         holders = [
             {"holder": "Sequoia Capital", "shares": 12_345_678, "percent": 14.2},
             {"holder": "Founder Holdings LLC", "shares": 8_765_432, "percent": 10.1},
@@ -610,15 +606,37 @@ class OwnershipContextTests(unittest.TestCase):
         self.assertEqual(context["current_shares_outstanding_as_of"], "2024-06-30")
 
     @patch("ipo_tracker.sec.load_companyfacts")
-    def test_build_ownership_context_nulls_tracked_pct_when_overlap_is_ambiguous(self, load_companyfacts_mock) -> None:
+    def test_build_ownership_context_prefers_explicit_prospectus_denominator(self, load_companyfacts_mock) -> None:
         load_companyfacts_mock.return_value = {"facts": {}}
         html = """
         <html>
           <body>
-            <p>There will be 163,000,000 shares of common stock outstanding immediately after this offering.</p>
+            <p>Ordinary shares to be outstanding upon completion of this offering 1,026,054,856 ordinary shares.</p>
           </body>
         </html>
         """
+        holders = [
+            {"holder": "SoftBank Group Corp.", "shares": 1_025_233_999, "percent": 100.0},
+        ]
+
+        context = build_ownership_context(
+            cik=1973239,
+            company_name="Arm Holdings plc",
+            filing_form="424B4",
+            html_text=html,
+            principal_holders=holders,
+            parsed_ipo_date="2023-09-14",
+        )
+
+        self.assertEqual(context["offering_shares_outstanding"], 1_026_054_856)
+        self.assertEqual(context["offering_shares_outstanding_source"], "prospectus_text_fallback")
+        self.assertIsNone(context["tracked_holder_pct_of_offering"])
+        self.assertIn("foreign or ADS-based", context["tracked_holder_pct_note"])
+
+    @patch("ipo_tracker.sec.load_companyfacts")
+    def test_build_ownership_context_nulls_tracked_pct_when_overlap_is_ambiguous(self, load_companyfacts_mock) -> None:
+        load_companyfacts_mock.return_value = {"facts": {}}
+        html = "<html><body><p>No explicit prospectus denominator here either.</p></body></html>"
         holders = [
             {"holder": "Entities Affiliated with Sutter Hill Ventures", "shares": 22_404_937, "percent": 13.7},
             {"holder": "Stefan Dyckerhoff", "shares": 22_404_937, "percent": 13.7},
@@ -636,6 +654,50 @@ class OwnershipContextTests(unittest.TestCase):
         self.assertEqual(context["offering_shares_outstanding_source"], "principal_holder_percent_derived")
         self.assertIsNone(context["tracked_holder_pct_of_offering"])
         self.assertIn("duplicate holder share counts", context["tracked_holder_pct_note"])
+
+    def test_promote_embedded_header_rows_extends_through_class_label_rows(self) -> None:
+        table = pd.DataFrame(
+            [
+                [
+                    "Name of Beneficial Owner",
+                    "Shares Beneficially Owned Before this Offering",
+                    "% of Total Outstanding",
+                    "% Total Voting Power Before this Offering",
+                    "Shares of Class A Common Stock Being Offered",
+                    "Shares Beneficially Owned After this Offering",
+                    "% of Total Outstanding",
+                ],
+                ["", "", "", "", "", "Class A", "Class B"],
+                ["", "Class A Shares", "Class B %", "Class A %", "", "Class A Shares", "Class B %"],
+                ["Entities affiliated with Tencent", "4,327,422", "9.4%", "10.7%", "0", "4,327,422", "9.4%"],
+            ]
+        )
+
+        promoted = _promote_embedded_header_rows(table)
+
+        self.assertEqual(len(promoted), 1)
+        self.assertEqual(promoted.iloc[0, 0], "Entities affiliated with Tencent")
+        self.assertIn("Class A", str(promoted.columns[5]))
+        self.assertIn("Class B", str(promoted.columns[6]))
+
+    def test_plausible_holder_name_rejects_class_label_rows(self) -> None:
+        self.assertFalse(_is_plausible_holder_name("Class A"))
+        self.assertFalse(_is_plausible_holder_name("Class B"))
+        self.assertFalse(_is_plausible_holder_name("Shares"))
+
+    def test_extract_prospectus_shares_outstanding_reads_label_first_total(self) -> None:
+        shares, note = _extract_prospectus_shares_outstanding(
+            """
+            <html>
+              <body>
+                <p>Class A, Class B, and Class C common stock to be outstanding after this offering 158,993,090 shares.</p>
+              </body>
+            </html>
+            """
+        )
+
+        self.assertEqual(shares, 158_993_090)
+        self.assertIsNotNone(note)
 
 
 if __name__ == "__main__":

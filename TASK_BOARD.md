@@ -69,6 +69,9 @@
 - The new ownership metric prefers `dei:EntityCommonStockSharesOutstanding`, then `us-gaap:CommonStockSharesOutstanding`, then `us-gaap:CommonStockSharesIssued`, and finally falls back to prospectus text when SEC Company Facts is unavailable.
 - The tracked-holder percentage intentionally stays null for ambiguous overlap cases and foreign / ADS-style issuers instead of forcing a misleading ratio.
 - `tests/test_db.py` now covers ownership-context snapshot persistence, and `tests/test_sec.py` now covers both the normal ownership derivation path and the conservative-overlap null path.
+- `ipo_tracker/sec.py` now prefers explicit prospectus offering-denominator text before holder-percent derivation, including ARM-style `ordinary shares to be outstanding upon completion of this offering` phrasing and RDDT-style label-first total-share phrasing.
+- `ipo_tracker/sec.py` now extends embedded holder-header promotion through follow-on class-label/unit rows so mixed Class A / Class B header fragments in RDDT-style tables are absorbed into the promoted header instead of leaking into parsed holder rows.
+- `tests/test_sec.py` now covers the ARM explicit-denominator path, the RDDT label-first denominator phrase, and the class-row header-promotion regression.
 
 ## Covered By Tests
 - `tests/test_sec.py` covers lock-up extraction, fallback behavior, long-window early-release percent parsing, greenshoe disambiguation, early-release and earnings-trigger detection, 8-K amendment detection, cover-page IPO date extraction, holder parsing, embedded multi-row holder-header promotion, ARM-style spacer-table percent retention, trading-day offsets, effective unlock date resolution, confidence scoring, suppression of stray numeric holder keys for the ARM-style embedded-header case, and truthful confidence details when filing HTML is unavailable.
@@ -80,6 +83,8 @@
 ## Still Open
 - Live-validate whether ARM now reports `Previous snapshot market data available: yes.` after the new ticker-keyed `company_market_history` fallback.
 - If the diagnostics still show `Previous snapshot market data available: no.` after the ticker-keyed history fallback change, debug why no prior non-null ARM market values exist in the deployed local DB.
+- Live-validate whether ARM ownership context now reports a non-null `offering_shares_outstanding` from explicit prospectus text rather than relying on holder-percent derivation.
+- Live-validate whether RDDT principal-holder parsing no longer leaks mixed Class A / Class B header rows into `principal_holders`.
 - Live-validate the new SEC filing-fetch diagnostics by checking whether an ARM-style miss now says `Prospectus fetch failed during refresh: HTTP ...` instead of falsely claiming the lock-up and IPO date were parsed from filing text.
 - Live-validate the new market fallback diagnostics by checking whether `market_data_note` explicitly says `Previous snapshot market data available: yes.` or `Previous snapshot market data available: no.` during a Yahoo rate-limit refresh.
 - Decide whether Yahoo rate-limit resilience needs an additional cache or retry/backoff layer beyond snapshot preservation plus in-process reuse.
@@ -101,6 +106,8 @@
 - Confirm the `Diagnostics` tab includes `calendar_unlock_date`, `effective_unlock_date`, and the `insider_sales` section with `lookup`, `summary`, and `transactions`.
 - Confirm `RDDT` still shows `effective_unlock_date = 2024-08-09` and live parsed Form 4 sales after the incremental-refresh change.
 - Confirm the app starts cleanly again after the restored `sec.py` tail.
+- Refresh `ARM` and confirm the ownership block now shows a non-null offering-date denominator sourced from prospectus text.
+- Refresh `RDDT` and inspect whether class-label/header rows are absent from `principal_holders`.
 - Reproduce a Yahoo Finance rate-limit scenario and inspect `market_data_note`.
 - Confirm whether `market_data_note` now backfills to `Previous snapshot market data available: yes.` after the new ticker-keyed market-history fallback.
 - If `market_data_note` still says `Previous snapshot market data available: no.` after the ticker-keyed history fallback change, treat that as a real deployed-history gap rather than the old snapshot-selection bug.

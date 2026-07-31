@@ -119,9 +119,18 @@ _PROSPECTUS_OUTSTANDING_PATTERNS = (
         r"there (?:will|would) be\s+([0-9][0-9,]{3,})[^.]{0,160}?outstanding immediately after this offering",
         re.I,
     ),
+    re.compile(
+        r"(?:ordinary shares|shares of common stock|shares of our common stock|class a common stock|class b common stock|class c common stock|class a, class b, and class c common stock|common shares)[^.]{0,160}?"
+        r"to be outstanding (?:immediately after|upon completion of|after) this offering[^0-9A-Za-z]{0,20}([0-9][0-9,]{3,})\s+(?:ordinary shares|shares)\b",
+        re.I,
+    ),
 )
 _ADS_OR_FOREIGN_SIGNAL_RE = re.compile(r"american depositary shares|\bads\b|\badr\b|\bplc\b", re.I)
 _PROXY_OVERLAP_SIGNAL_RE = re.compile(r"subject to voting proxy|voting proxy", re.I)
+_HOLDER_CLASS_LABEL_RE = re.compile(
+    r"^(?:class [abc](?: common stock)?|shares|%|class a, class b, and class c|before this offering|after this offering)$",
+    re.I,
+)
 
 # ── Fix 3 ──────────────────────────────────────────────────────────────────────
 _LOCKUP_AMENDMENT_RE = re.compile(
@@ -805,6 +814,8 @@ def _is_plausible_holder_name(text: str) -> bool:
     cleaned = _clean_cell_text(text)
     if not cleaned or _is_placeholder_holder(cleaned):
         return False
+    if _HOLDER_CLASS_LABEL_RE.fullmatch(cleaned):
+        return False
     letters = sum(character.isalpha() for character in cleaned)
     digits = sum(character.isdigit() for character in cleaned)
     if letters < 2:
@@ -961,6 +972,30 @@ def _table_has_default_columns(table: pd.DataFrame) -> bool:
     )
 
 
+def _row_looks_like_holder_header_extension(row_values: list[str]) -> bool:
+    normalized_values = [value.lower() for value in row_values if value]
+    if not normalized_values:
+        return False
+    joined = " ".join(normalized_values)
+    if re.search(r"\d[\d,]{3,}", joined):
+        return False
+    return any(
+        token in joined
+        for token in (
+            "class a",
+            "class b",
+            "class c",
+            "shares",
+            "total outstanding",
+            "voting power",
+            "before this offering",
+            "after this offering",
+            "being offered",
+            "%",
+        )
+    )
+
+
 def _promote_embedded_header_rows(table: pd.DataFrame) -> pd.DataFrame:
     if table.empty:
         return table
@@ -973,8 +1008,16 @@ def _promote_embedded_header_rows(table: pd.DataFrame) -> pd.DataFrame:
         if not row_text:
             continue
         if ("beneficial" in row_text or "shareholder" in row_text or "stockholder" in row_text) and (
-            "name" in row_text or "number" in row_text or "percent" in row_text
+            "name" in row_text or "number" in row_text or "percent" in row_text or "%" in row_text
         ):
+            header_end = row_idx
+
+    if header_end >= 0:
+        max_extension_scan = min(len(table), header_end + 4)
+        for row_idx in range(header_end + 1, max_extension_scan):
+            row_values = [_clean_cell_text(value) for value in table.iloc[row_idx].tolist()]
+            if not _row_looks_like_holder_header_extension(row_values):
+                break
             header_end = row_idx
 
     if header_end < 0:
@@ -1174,11 +1217,18 @@ def _derive_offering_shares_outstanding(
     principal_holders: list[dict[str, Any]],
     html_text: str,
 ) -> tuple[int | None, str | None, str]:
+    explicit_value, explicit_note = _extract_prospectus_shares_outstanding(html_text)
+    if explicit_value is not None:
+        return explicit_value, "prospectus_text_fallback", explicit_note or "Prospectus text fallback"
+
     derived_values: list[float] = []
     for holder in principal_holders:
+        holder_name = str(holder.get("holder") or "").strip()
         shares = _coerce_share_count(holder.get("shares"))
         percent = _coerce_percent_value(holder.get("percent"))
         if shares is None or percent is None or percent == 0:
+            continue
+        if not _is_plausible_holder_name(holder_name):
             continue
         derived = shares / (percent / 100.0)
         if derived < shares:
@@ -1200,9 +1250,6 @@ def _derive_offering_shares_outstanding(
             f"Holder rows imply inconsistent offering-date share counts (max deviation {max_deviation * 100:.1f}%).",
         )
 
-    fallback_value, fallback_note = _extract_prospectus_shares_outstanding(html_text)
-    if fallback_value is not None:
-        return fallback_value, "prospectus_text_fallback", fallback_note or "Prospectus text fallback"
     return None, None, "No reliable offering-date shares outstanding figure was derived."
 
 
